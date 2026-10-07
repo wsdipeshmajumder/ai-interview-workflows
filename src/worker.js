@@ -24,10 +24,15 @@ const APPLICATION_HEADER = [
   "summary",
   "strengths",
   "risks",
+  "good",
+  "bad",
+  "fit_criteria",
   "follow_up_questions",
   "answers_json",
   "resume_text"
 ];
+
+const MIN_INTERVIEW_MINUTES = 30;
 
 const SAMPLE_JD = [
   "Evaluate Model Outputs: Audit, score, and validate outputs from various Generative AI models and LLM tools to ensure operational accuracy and contextual relevance.",
@@ -141,6 +146,7 @@ async function startInterview(request, env, jobId) {
   }
 
   const interview = await generateInterview(env, job, resumeText);
+  const minMinutes = interviewMinutes(job);
   const state = {
     id: id("int"),
     jobId: job.id,
@@ -148,6 +154,7 @@ async function startInterview(request, env, jobId) {
     resumeFileName: resumeFile && resumeFile.name ? String(resumeFile.name).slice(0, 160) : "resume",
     resumeText: resumeText,
     questions: interview.questions,
+    minMinutes: minMinutes,
     index: 0,
     answers: [],
     startedAt: new Date().toISOString(),
@@ -182,6 +189,13 @@ async function answerInterview(request, env) {
   if (state.index < state.questions.length) {
     const nextToken = await createSignedToken(env, state);
     return html(layout(env, "Interview", interviewView(job, state, nextToken)));
+  }
+
+  if (elapsedInterviewMinutes(state) < interviewMinutes(job, state)) {
+    state.extraProbeCount = Number(state.extraProbeCount || 0) + 1;
+    state.questions.push(extraProbeQuestion(state.extraProbeCount));
+    const nextToken = await createSignedToken(env, state);
+    return html(layout(env, "Interview", interviewView(job, state, nextToken, "This is a 30 minute minimum screen. Continue with the next deep probe.")));
   }
 
   const evaluation = await evaluateInterview(env, job, state);
@@ -237,7 +251,7 @@ async function createJobAction(request, env, admin) {
     department: clean(form.get("department")),
     location: clean(form.get("location")),
     positions: Number(form.get("positions") || 1),
-    estimatedMinutes: Number(form.get("estimatedMinutes") || 25),
+    estimatedMinutes: Math.max(MIN_INTERVIEW_MINUTES, Number(form.get("estimatedMinutes") || MIN_INTERVIEW_MINUTES)),
     status: clean(form.get("status")) || "active",
     jd: normalizeText(form.get("jd") || "", 12000),
     marketContext: normalizeText(form.get("marketContext") || env.DEFAULT_MARKET_CONTEXT || "", 4000)
@@ -288,7 +302,7 @@ function jobsListView(jobs) {
       "<div>",
       "<p class=\"eyebrow\">" + escapeHtml(job.department || "Open role") + "</p>",
       "<h2>" + escapeHtml(job.title) + "</h2>",
-      "<p class=\"muted\">" + escapeHtml(job.location || "Location not specified") + " · " + escapeHtml(job.positions) + " position" + (Number(job.positions) === 1 ? "" : "s") + " · " + escapeHtml(job.estimatedMinutes) + " min</p>",
+      "<p class=\"muted\">" + escapeHtml(job.location || "Location not specified") + " · " + escapeHtml(job.positions) + " position" + (Number(job.positions) === 1 ? "" : "s") + " · " + escapeHtml(interviewMinutes(job)) + " min</p>",
       "</div>",
       "<a class=\"button\" href=\"/jobs/" + encodeURIComponent(job.id) + "\">Apply</a>",
       "</article>"
@@ -310,7 +324,7 @@ function jobDetailView(job, message) {
     "<div>",
     "<p class=\"eyebrow\">" + escapeHtml(job.department || "Open role") + "</p>",
     "<h1>" + escapeHtml(job.title) + "</h1>",
-    "<p class=\"muted\">" + escapeHtml(job.location || "Location not specified") + " · " + escapeHtml(job.positions) + " position" + (Number(job.positions) === 1 ? "" : "s") + " · " + escapeHtml(job.estimatedMinutes) + " min interview</p>",
+    "<p class=\"muted\">" + escapeHtml(job.location || "Location not specified") + " · " + escapeHtml(job.positions) + " position" + (Number(job.positions) === 1 ? "" : "s") + " · minimum " + escapeHtml(interviewMinutes(job)) + " min interview</p>",
     "<div class=\"jd\">" + formatText(job.jd) + "</div>",
     "</div>",
     "<aside class=\"panel\">",
@@ -335,6 +349,10 @@ function interviewView(job, state, token, message) {
   const total = state.questions.length;
   const question = state.questions[state.index];
   const pct = Math.max(3, Math.round((state.index / total) * 100));
+  const isFinal = current === total;
+  const minMinutes = interviewMinutes(job, state);
+  const endAt = new Date(new Date(state.startedAt).getTime() + minMinutes * 60 * 1000).toISOString();
+  const remainingSeconds = Math.max(0, Math.ceil((new Date(endAt).getTime() - Date.now()) / 1000));
   return [
     message ? "<div class=\"flash\">" + escapeHtml(message) + "</div>" : "",
     state.aiNote ? "<div class=\"flash\">" + escapeHtml(state.aiNote) + "</div>" : "",
@@ -342,13 +360,15 @@ function interviewView(job, state, token, message) {
     "<div class=\"progress\"><span style=\"width:" + pct + "%\"></span></div>",
     "<p class=\"eyebrow\">" + escapeHtml(job.title) + " · Question " + current + " of " + total + "</p>",
     "<h1>" + escapeHtml(question.question) + "</h1>",
-    "<p class=\"muted\">" + escapeHtml(question.competency || "Interview signal") + " · " + escapeHtml(question.timeBoxMinutes || 3) + " min</p>",
+    "<p class=\"muted\">" + escapeHtml(question.competency || "Interview signal") + " · " + escapeHtml(question.timeBoxMinutes || 3) + " min · Minimum screen " + escapeHtml(minMinutes) + " min</p>",
+    isFinal ? "<p id=\"timerHint\" class=\"hint\">Final submission unlocks after the 30 minute minimum.</p>" : "",
     "<form method=\"post\" action=\"/interview/answer\" class=\"form\">",
     "<input type=\"hidden\" name=\"token\" value=\"" + escapeHtml(token) + "\">",
     "<label>Your answer<textarea name=\"answer\" rows=\"9\" required autofocus></textarea></label>",
-    "<button class=\"button\" type=\"submit\">" + (current === total ? "Submit interview" : "Next question") + "</button>",
+    "<button id=\"answerButton\" class=\"button\" type=\"submit\" " + (isFinal && remainingSeconds > 0 ? "disabled" : "") + ">" + (isFinal ? "Submit interview" : "Next question") + "</button>",
     "</form>",
-    "</section>"
+    "</section>",
+    isFinal ? interviewTimerScript(endAt) : ""
   ].join("");
 }
 
@@ -360,6 +380,21 @@ function completeView(job) {
     "<p>Your responses have been recorded. The recruiter will review the AI screening result and continue with the next round.</p>",
     "<a class=\"button\" href=\"/jobs\">Back to openings</a>",
     "</section>"
+  ].join("");
+}
+
+function interviewTimerScript(endAt) {
+  return [
+    "<script>",
+    "(function(){",
+    "var endAt=new Date(" + JSON.stringify(endAt) + ").getTime();",
+    "var button=document.getElementById('answerButton');",
+    "var hint=document.getElementById('timerHint');",
+    "function fmt(seconds){var m=Math.floor(seconds/60);var s=seconds%60;return m+'m '+String(s).padStart(2,'0')+'s';}",
+    "function tick(){var remaining=Math.max(0,Math.ceil((endAt-Date.now())/1000));if(remaining>0){button.disabled=true;hint.textContent='Final submission unlocks in '+fmt(remaining)+'. Use the remaining time to deepen your answer.';}else{button.disabled=false;hint.textContent='Minimum interview time met. You can submit now.';clearInterval(timer);}}",
+    "var timer=setInterval(tick,1000);tick();",
+    "})();",
+    "</script>"
   ].join("");
 }
 
@@ -413,7 +448,7 @@ function newJobPage(env, admin, defaults, message) {
     "<label>Department<input name=\"department\" value=\"" + escapeHtml(defaults.department || "Operations") + "\"></label>",
     "<label>Location<input name=\"location\" value=\"" + escapeHtml(defaults.location || "Kolkata / On-site") + "\"></label>",
     "<label>Positions<input name=\"positions\" type=\"number\" min=\"1\" value=\"" + escapeHtml(defaults.positions || 5) + "\"></label>",
-    "<label>Estimated minutes<input name=\"estimatedMinutes\" type=\"number\" min=\"10\" max=\"90\" value=\"" + escapeHtml(defaults.estimatedMinutes || 25) + "\"></label>",
+    "<label>Estimated minutes<input name=\"estimatedMinutes\" type=\"number\" min=\"30\" max=\"90\" value=\"" + escapeHtml(defaults.estimatedMinutes || MIN_INTERVIEW_MINUTES) + "\"></label>",
     "<label>Status<select name=\"status\"><option value=\"active\">active</option><option value=\"closed\">closed</option></select></label>",
     "</div>",
     "<label>Job description<textarea name=\"jd\" rows=\"12\" required>" + escapeHtml(defaults.jd || SAMPLE_JD) + "</textarea></label>",
@@ -434,6 +469,9 @@ function adminJobView(job, applications) {
       "<td><strong>" + escapeHtml(ev.score || "") + "</strong></td>",
       "<td>" + escapeHtml(ev.recommendation || "") + "</td>",
       "<td>" + escapeHtml(ev.summary || "") + "</td>",
+      "<td>" + escapeHtml(compactList(ev.good || ev.strengths)) + "</td>",
+      "<td>" + escapeHtml(compactList(ev.bad || ev.risks)) + "</td>",
+      "<td>" + escapeHtml(compactFitCriteria(ev.fitCriteria)) + "</td>",
       "<td>" + escapeHtml(application.submittedAt || "") + "</td>",
       "</tr>"
     ].join("");
@@ -448,14 +486,25 @@ function adminJobView(job, applications) {
     "</section>",
     "<section class=\"panel\"><h2>JD</h2><div class=\"jd compact\">" + formatText(job.jd) + "</div></section>",
     "<section class=\"section-gap\"><h2>Candidates</h2><div class=\"table-wrap\"><table>",
-    "<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Score</th><th>Recommendation</th><th>Summary</th><th>Submitted</th></tr></thead>",
-    "<tbody>" + (rows || "<tr><td colspan=\"7\">No candidates yet.</td></tr>") + "</tbody>",
+    "<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>AI score</th><th>Recommendation</th><th>Summary</th><th>Good</th><th>Bad</th><th>Fit criteria</th><th>Submitted</th></tr></thead>",
+    "<tbody>" + (rows || "<tr><td colspan=\"10\">No candidates yet.</td></tr>") + "</tbody>",
     "</table></div></section>"
   ].join("");
 }
 
 function errorView(message) {
   return "<section class=\"empty\"><h1>" + escapeHtml(message) + "</h1><a class=\"button\" href=\"/jobs\">Go to openings</a></section>";
+}
+
+function compactList(items) {
+  return Array.isArray(items) ? items.filter(Boolean).slice(0, 3).join(" | ") : clean(items || "");
+}
+
+function compactFitCriteria(items) {
+  if (!Array.isArray(items)) return "";
+  return items.slice(0, 4).map(function(item) {
+    return clean(item.criterion || "") + ": " + (item.met ? "met" : "not met") + (item.evidence ? " (" + clean(item.evidence) + ")" : "");
+  }).join(" | ");
 }
 
 function resumeExtractScripts() {
@@ -506,7 +555,7 @@ async function createJob(env, input) {
     department: input.department,
     location: input.location,
     positions: input.positions || 1,
-    estimatedMinutes: input.estimatedMinutes || 25,
+    estimatedMinutes: Math.max(MIN_INTERVIEW_MINUTES, Number(input.estimatedMinutes || MIN_INTERVIEW_MINUTES)),
     status: input.status || "active",
     sheetTitle: safeSheetTitle(input.title) + " " + id("").slice(-6),
     createdAt: new Date().toISOString(),
@@ -546,7 +595,7 @@ async function readApplications(env, job) {
     return readFallbackApplications(env, job.id);
   }
   await ensureApplicationSheet(env, job.sheetTitle);
-  const rows = await valuesGet(env, quoteSheet(job.sheetTitle) + "!A2:N");
+  const rows = await valuesGet(env, quoteSheet(job.sheetTitle) + "!A2:Q");
   return rows.filter(function(row) {
     return row[1];
   }).map(function(row) {
@@ -566,10 +615,13 @@ async function readApplications(env, job) {
         summary: row[8] || "",
         strengths: splitList(row[9]),
         risks: splitList(row[10]),
-        followUpQuestions: splitList(row[11])
+        good: splitList(row[11]),
+        bad: splitList(row[12]),
+        fitCriteria: safeJson(row[13], []),
+        followUpQuestions: splitList(row[14])
       },
-      answers: safeJson(row[12], []),
-      resumeText: row[13] || ""
+      answers: safeJson(row[15], []),
+      resumeText: row[16] || ""
     };
   }).sort(function(a, b) {
     return String(b.submittedAt).localeCompare(String(a.submittedAt));
@@ -637,7 +689,7 @@ function memoryJobs() {
       department: "Operations",
       location: "Kolkata / On-site",
       positions: 5,
-      estimatedMinutes: 25,
+      estimatedMinutes: MIN_INTERVIEW_MINUTES,
       status: "active",
       sheetTitle: "Analyst AI Workflows",
       createdAt: new Date().toISOString(),
@@ -655,7 +707,7 @@ function rowToJob(row) {
     department: row[2] || "",
     location: row[3] || "",
     positions: Number(row[4] || 1),
-    estimatedMinutes: Number(row[5] || 25),
+    estimatedMinutes: Math.max(MIN_INTERVIEW_MINUTES, Number(row[5] || MIN_INTERVIEW_MINUTES)),
     status: row[6] || "active",
     sheetTitle: row[7] || row[1] || "Job",
     createdAt: row[8] || "",
@@ -671,7 +723,7 @@ function jobToRow(job) {
     job.department,
     job.location,
     job.positions,
-    job.estimatedMinutes,
+    interviewMinutes(job),
     job.status,
     job.sheetTitle,
     job.createdAt,
@@ -694,6 +746,9 @@ function applicationToRow(application) {
     evaluation.summary,
     listCell(evaluation.strengths),
     listCell(evaluation.risks),
+    listCell(evaluation.good),
+    listCell(evaluation.bad),
+    JSON.stringify(evaluation.fitCriteria || []),
     listCell(evaluation.followUpQuestions),
     JSON.stringify(application.answers || []),
     normalizeText(application.resumeText || "", 12000)
@@ -821,15 +876,55 @@ async function importPrivateKey(privateKey) {
   return crypto.subtle.importKey("pkcs8", binary.buffer, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
 }
 
+function interviewMinutes(job, state) {
+  return Math.max(MIN_INTERVIEW_MINUTES, Number((state && state.minMinutes) || (job && job.estimatedMinutes) || MIN_INTERVIEW_MINUTES));
+}
+
+function elapsedInterviewMinutes(state) {
+  return Math.floor((Date.now() - new Date(state.startedAt).getTime()) / 60000);
+}
+
+function extraProbeQuestion(count) {
+  const questions = [
+    {
+      question: "Take one answer you gave earlier and defend it under failure conditions: what exact evidence would prove you were wrong, and what would you change first?",
+      competency: "Critical self-audit",
+      expectedSignals: "Names falsifying evidence, measurable checks, priority order, and ownership of correction.",
+      timeBoxMinutes: 4
+    },
+    {
+      question: "You inherit an AI workflow that looks accurate in demos but fails in production. Give a step-by-step triage plan for the first two hours.",
+      competency: "Production judgment",
+      expectedSignals: "Logs, sampling, source comparison, rollback criteria, stakeholder communication, and root-cause isolation.",
+      timeBoxMinutes: 4
+    },
+    {
+      question: "Describe the toughest tradeoff between speed and correctness in AI operations. Where would you refuse to automate?",
+      competency: "Risk judgment",
+      expectedSignals: "Concrete boundaries, compliance awareness, business impact, and escalation discipline.",
+      timeBoxMinutes: 4
+    },
+    {
+      question: "Design a pass/fail rubric for AI-generated sales outreach. Include disqualifying errors, not just quality positives.",
+      competency: "Rubric design",
+      expectedSignals: "Objective criteria, severe error classes, examples, thresholds, and repeatable scoring.",
+      timeBoxMinutes: 4
+    }
+  ];
+  return questions[(count - 1) % questions.length];
+}
+
 async function generateInterview(env, job, resumeText) {
+  const minMinutes = interviewMinutes(job);
   const prompt = [
-    "Create a structured screening interview for the candidate.",
+    "Create a structured, high-bar screening interview for the candidate.",
     "Use the job description, resume, and market context together.",
-    "Mix resume-specific, JD-specific, scenario, compliance, data quality, and workflow judgment questions.",
-    "Avoid trivia and do not ask discriminatory questions.",
+    "The interview must be difficult, deeply probing, and designed to reveal weak fit quickly through job-related evidence.",
+    "Mix resume-specific probes, JD-specific scenarios, compliance checks, data-quality cases, workflow judgment, failure analysis, and disqualification traps based on real operational mistakes.",
+    "Ask for concrete examples, metrics, edge cases, evidence, and tradeoffs. Avoid trivia, personal questions, or discriminatory questions.",
     "Return only JSON with this shape:",
     "{\"estimatedMinutes\":number,\"questions\":[{\"question\":\"string\",\"competency\":\"string\",\"expectedSignals\":\"string\",\"timeBoxMinutes\":number}]}",
-    "Use 7 to 9 questions for a " + (job.estimatedMinutes || 25) + " minute interview.",
+    "Use 10 to 12 questions for a minimum " + minMinutes + " minute interview. The total timeBoxMinutes must be at least " + minMinutes + ".",
     "JOB TITLE:\n" + job.title,
     "JD:\n" + normalizeText(job.jd, 10000),
     "MARKET CONTEXT:\n" + normalizeText(job.marketContext || env.DEFAULT_MARKET_CONTEXT || "", 4000),
@@ -840,10 +935,10 @@ async function generateInterview(env, job, resumeText) {
       { role: "system", content: "You are an expert interviewer for AI workflow analyst roles. Return only valid JSON." },
       { role: "user", content: prompt }
     ], 0.35);
-    if (!result.questions || !Array.isArray(result.questions) || result.questions.length < 3) throw new Error("Too few questions returned");
+    if (!result.questions || !Array.isArray(result.questions) || result.questions.length < 10) throw new Error("Too few questions returned");
     return {
-      estimatedMinutes: Number(result.estimatedMinutes || job.estimatedMinutes || 25),
-      questions: result.questions.slice(0, 10).map(function(q) {
+      estimatedMinutes: Math.max(minMinutes, Number(result.estimatedMinutes || minMinutes)),
+      questions: result.questions.slice(0, 12).map(function(q) {
         return {
           question: clean(q.question),
           competency: clean(q.competency || "General fit"),
@@ -862,9 +957,11 @@ async function generateInterview(env, job, resumeText) {
 async function evaluateInterview(env, job, state) {
   const prompt = [
     "Evaluate this candidate for the role.",
-    "Score only from the resume and answers. Be strict, fair, and concise.",
+    "Score only from the resume and answers. Be strict, fair, evidence-based, and selective.",
+    "Default to disqualifying weak, generic, evasive, or unverifiable answers. Reward specific operational evidence, measurable QA discipline, privacy judgment, and ability to translate failures into engineering feedback.",
     "Return only JSON with this shape:",
-    "{\"score\":number,\"recommendation\":\"Strong Hire|Hire|Maybe|No Hire\",\"summary\":\"string\",\"strengths\":[\"string\"],\"risks\":[\"string\"],\"followUpQuestions\":[\"string\"],\"rubric\":[{\"area\":\"string\",\"score\":number,\"comment\":\"string\"}]}",
+    "{\"score\":number,\"recommendation\":\"Strong Hire|Hire|Maybe|No Hire\",\"summary\":\"string\",\"good\":[\"string\"],\"bad\":[\"string\"],\"fitCriteria\":[{\"criterion\":\"string\",\"met\":boolean,\"evidence\":\"string\"}],\"strengths\":[\"string\"],\"risks\":[\"string\"],\"followUpQuestions\":[\"string\"],\"rubric\":[{\"area\":\"string\",\"score\":number,\"comment\":\"string\"}]}",
+    "Score out of 100 using this bar: 85+ strong hire, 75-84 hire, 60-74 maybe, below 60 no hire. Be comfortable giving No Hire.",
     "JOB:\n" + job.title,
     "JD:\n" + normalizeText(job.jd, 9000),
     "MARKET CONTEXT:\n" + normalizeText(job.marketContext || env.DEFAULT_MARKET_CONTEXT || "", 3000),
@@ -880,6 +977,9 @@ async function evaluateInterview(env, job, state) {
       score: Number(result.score || 0),
       recommendation: clean(result.recommendation || "Maybe"),
       summary: clean(result.summary || ""),
+      good: Array.isArray(result.good) ? result.good.map(clean) : [],
+      bad: Array.isArray(result.bad) ? result.bad.map(clean) : [],
+      fitCriteria: Array.isArray(result.fitCriteria) ? result.fitCriteria : [],
       strengths: Array.isArray(result.strengths) ? result.strengths.map(clean) : [],
       risks: Array.isArray(result.risks) ? result.risks.map(clean) : [],
       followUpQuestions: Array.isArray(result.followUpQuestions) ? result.followUpQuestions.map(clean) : [],
@@ -896,23 +996,29 @@ async function aiJson(env, messages, temperature) {
 }
 
 async function openAiJson(env, messages, temperature) {
+  const model = env.OPENAI_MODEL || "gpt-4o-mini";
+  const requestBody = {
+    model: model,
+    messages: messages,
+    response_format: { type: "json_object" }
+  };
+  if (supportsCustomTemperature(model)) requestBody.temperature = temperature;
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: "Bearer " + env.OPENAI_API_KEY,
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      model: env.OPENAI_MODEL || "gpt-4o-mini",
-      messages: messages,
-      temperature: temperature,
-      response_format: { type: "json_object" }
-    })
+    body: JSON.stringify(requestBody)
   });
   if (!response.ok) throw new Error("OpenAI " + response.status + ": " + (await response.text()).slice(0, 220));
   const data = await response.json();
   const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
   return parseJsonObject(content || "");
+}
+
+function supportsCustomTemperature(model) {
+  return !/^gpt-[56]/.test(String(model || ""));
 }
 
 async function openRouterJson(env, messages, temperature) {
@@ -940,16 +1046,20 @@ async function openRouterJson(env, messages, temperature) {
 
 function fallbackInterview(job) {
   return {
-    estimatedMinutes: Number(job.estimatedMinutes || 25),
+    estimatedMinutes: interviewMinutes(job),
     questions: [
-      { question: "Walk me through the parts of your experience that are most relevant to this role.", competency: "Resume relevance", expectedSignals: "Specific examples, tools, outcomes, and role fit.", timeBoxMinutes: 3 },
-      { question: "How would you audit an AI-generated output for accuracy, relevance, and compliance?", competency: "AI output evaluation", expectedSignals: "Rubrics, evidence checks, severity labels, escalation, repeatability.", timeBoxMinutes: 4 },
-      { question: "A sales team says AI lead scoring is producing poor priorities. What would you inspect first?", competency: "Sales workflow troubleshooting", expectedSignals: "Data quality, thresholds, false positives, CRM fields, feedback loop.", timeBoxMinutes: 4 },
-      { question: "How would you validate AI-extracted finance data before it reaches a report?", competency: "Financial workflow validation", expectedSignals: "Source matching, reconciliation, sampling, exceptions, audit trail.", timeBoxMinutes: 4 },
-      { question: "Describe a prompt or instruction you improved. What changed and how did you measure it?", competency: "Prompt refinement", expectedSignals: "Before and after examples, tests, failure categories, measurable gains.", timeBoxMinutes: 4 },
-      { question: "How would you document hallucinations or systematic AI errors so engineering can act on them?", competency: "Operational documentation", expectedSignals: "Reproduction steps, inputs, expected vs actual, frequency, impact, priority.", timeBoxMinutes: 3 },
-      { question: "What privacy or security checks matter when handling candidate, customer, sales, or finance data in AI workflows?", competency: "Data governance", expectedSignals: "PII handling, least privilege, masking, retention, consent, access control.", timeBoxMinutes: 3 },
-      { question: "If selected, what would your first week plan look like for learning and improving this AI workflow operation?", competency: "Execution readiness", expectedSignals: "Structured onboarding, quick audits, stakeholders, first metrics.", timeBoxMinutes: 3 }
+      { question: "Walk me through the strongest evidence that your past work maps to this role. Avoid generalities; give tools, volume, error rates, and outcomes.", competency: "Resume evidence", expectedSignals: "Specific metrics, named workflows, honest scope, measurable outcomes.", timeBoxMinutes: 3 },
+      { question: "Design a scoring rubric for AI-generated customer support responses. What errors are automatic failures?", competency: "AI output evaluation", expectedSignals: "Objective criteria, severe error classes, source checks, escalation rules.", timeBoxMinutes: 3 },
+      { question: "A CRM enrichment workflow is silently adding wrong company data. How do you detect it, contain it, and prove the fix worked?", competency: "Data quality incident response", expectedSignals: "Sampling, source comparison, rollback, audit logs, measurable validation.", timeBoxMinutes: 3 },
+      { question: "Give a finance extraction example where automation should not be trusted. What controls would you put before reporting?", competency: "Financial validation", expectedSignals: "Reconciliation, source evidence, approval thresholds, exception handling.", timeBoxMinutes: 3 },
+      { question: "Show how you would improve a weak prompt for lead scoring or outreach drafting. What test set would prove improvement?", competency: "Prompt testing", expectedSignals: "Before/after thinking, test cases, false positives, performance metrics.", timeBoxMinutes: 3 },
+      { question: "A model gives a confident but false summary of a client onboarding call. How would you document the issue for engineering?", competency: "Failure documentation", expectedSignals: "Inputs, expected vs actual, reproduction, frequency, severity, business impact.", timeBoxMinutes: 3 },
+      { question: "What data should never be sent into an AI workflow without controls, and what controls are non-negotiable?", competency: "Privacy and governance", expectedSignals: "PII handling, masking, retention, consent, least privilege, access control.", timeBoxMinutes: 3 },
+      { question: "You have 500 AI outputs to rank by quality today. Explain your sampling, labeling, and calibration process.", competency: "High-volume execution", expectedSignals: "Batching, inter-rater checks, examples, fatigue controls, consistency.", timeBoxMinutes: 3 },
+      { question: "Tell me about a time you found a systematic process error. What did you do after identifying it?", competency: "Operational ownership", expectedSignals: "Root cause, stakeholder communication, durable fix, measured improvement.", timeBoxMinutes: 3 },
+      { question: "Where would you draw the line between analyst responsibility and engineering responsibility in an AI workflow failure?", competency: "Bridge operations and tech", expectedSignals: "Clear handoff, evidence quality, prioritization, collaboration boundaries.", timeBoxMinutes: 3 },
+      { question: "If your manager asks you to approve outputs you have not validated because the offer deadline is today, what do you do?", competency: "Integrity under pressure", expectedSignals: "Risk framing, escalation, partial approval boundaries, refusal when needed.", timeBoxMinutes: 3 },
+      { question: "Give your first-week plan for this role, including what you would audit, what metrics you would define, and what would disqualify a workflow from automation.", competency: "Readiness and judgment", expectedSignals: "Structured plan, quality benchmarks, workflow triage, practical priorities.", timeBoxMinutes: 3 }
     ]
   };
 }
@@ -967,13 +1077,26 @@ function fallbackEvaluation(job, state) {
   const score = Math.max(35, Math.min(78, answered * 7 + hits * 3 + Math.floor(combined.split(/\s+/).length / 35)));
   return {
     score: score,
-    recommendation: score >= 70 ? "Maybe" : "Needs human review",
+    recommendation: score >= 75 ? "Maybe" : "No Hire",
     summary: "Fallback score for " + job.title + ". AI evaluation was unavailable, so use this only as a screening aid.",
+    good: keywordHitsDescription(hits),
+    bad: ["AI scoring model was unavailable; a human reviewer must validate the answer quality before advancing."],
+    fitCriteria: [
+      { criterion: "Role-specific AI workflow evidence", met: hits >= 4, evidence: "Keyword and answer-completion based fallback estimate." },
+      { criterion: "Detailed answer depth", met: answered >= 10, evidence: answered + " substantive answers captured." },
+      { criterion: "Ready for same-day offer", met: false, evidence: "Fallback scoring cannot authorize an offer." }
+    ],
     strengths: ["Candidate completed the AI interview."],
     risks: ["AI scoring model was unavailable; human review is required."],
     followUpQuestions: ["Validate the candidate's answers in the human round."],
     rubric: []
   };
+}
+
+function keywordHitsDescription(hits) {
+  if (hits >= 6) return ["Candidate referenced several relevant AI workflow concepts."];
+  if (hits >= 3) return ["Candidate referenced some relevant AI workflow concepts, but depth is unverified."];
+  return ["Candidate completed the interview, but fallback scoring found limited role-specific signal."];
 }
 
 async function createSignedToken(env, data) {
