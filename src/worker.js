@@ -107,6 +107,10 @@ async function route(request, env) {
     if (!admin) return redirect("/admin/login");
     return updateJobStatusAction(request, env, path.split("/")[3]);
   }
+  if (path.startsWith("/admin/jobs/") && path.endsWith("/settings") && method === "POST") {
+    if (!admin) return redirect("/admin/login");
+    return updateJobSettingsAction(request, env, path.split("/")[3]);
+  }
   if (path.startsWith("/admin/jobs/") && method === "GET") {
     if (!admin) return redirect("/admin/login");
     return adminJobPage(env, admin, path.split("/")[3]);
@@ -280,6 +284,22 @@ async function createJobAction(request, env, admin) {
 async function updateJobStatusAction(request, env, jobId) {
   const form = await request.formData();
   await updateJobStatus(env, jobId, clean(form.get("status")) || "active");
+  return redirect("/admin/jobs/" + encodeURIComponent(jobId));
+}
+
+async function updateJobSettingsAction(request, env, jobId) {
+  const form = await request.formData();
+  const input = {
+    estimatedMinutes: settingNumber(form.get("estimatedMinutes"), MIN_INTERVIEW_MINUTES, MIN_INTERVIEW_MINUTES, 120),
+    minQuestions: settingNumber(form.get("minQuestions"), DEFAULT_MIN_QUESTIONS, 1, 80),
+    maxQuestions: settingNumber(form.get("maxQuestions"), DEFAULT_MAX_QUESTIONS, 1, 100),
+    passingScore: settingNumber(form.get("passingScore"), DEFAULT_PASSING_SCORE, 50, 100),
+    jd: normalizeText(form.get("jd") || "", 12000),
+    marketContext: normalizeText(form.get("marketContext") || env.DEFAULT_MARKET_CONTEXT || "", 4000)
+  };
+  if (input.maxQuestions < input.minQuestions) input.maxQuestions = input.minQuestions;
+  if (!input.jd) return redirect("/admin/jobs/" + encodeURIComponent(jobId));
+  await updateJobSettings(env, jobId, input);
   return redirect("/admin/jobs/" + encodeURIComponent(jobId));
 }
 
@@ -507,7 +527,19 @@ function adminJobView(job, applications) {
     "<button class=\"button secondary\" type=\"submit\">Update</button>",
     "</form>",
     "</section>",
-    "<section class=\"panel\"><h2>JD</h2><div class=\"jd compact\">" + formatText(job.jd) + "</div></section>",
+    "<section class=\"panel\"><h2>Interview controls</h2>",
+    "<form method=\"post\" action=\"/admin/jobs/" + encodeURIComponent(job.id) + "/settings\" class=\"form\">",
+    "<div class=\"grid-2\">",
+    "<label>Minimum minutes<input name=\"estimatedMinutes\" type=\"number\" min=\"30\" max=\"120\" value=\"" + escapeHtml(settings.minMinutes) + "\"></label>",
+    "<label>Minimum questions<input name=\"minQuestions\" type=\"number\" min=\"1\" max=\"80\" value=\"" + escapeHtml(settings.minQuestions) + "\"></label>",
+    "<label>Maximum questions<input name=\"maxQuestions\" type=\"number\" min=\"1\" max=\"100\" value=\"" + escapeHtml(settings.maxQuestions) + "\"></label>",
+    "<label>Passing score<input name=\"passingScore\" type=\"number\" min=\"50\" max=\"100\" value=\"" + escapeHtml(settings.passingScore) + "\"></label>",
+    "</div>",
+    "<label>Job description<textarea name=\"jd\" rows=\"10\" required>" + escapeHtml(job.jd || "") + "</textarea></label>",
+    "<label>Market trends and interviewer guidance<textarea name=\"marketContext\" rows=\"4\">" + escapeHtml(job.marketContext || "") + "</textarea></label>",
+    "<button class=\"button\" type=\"submit\">Save interview controls</button>",
+    "</form>",
+    "</section>",
     "<section class=\"section-gap\"><h2>Candidates</h2><div class=\"table-wrap\"><table>",
     "<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>AI score</th><th>Recommendation</th><th>Summary</th><th>Good</th><th>Bad</th><th>Fit criteria</th><th>Submitted</th></tr></thead>",
     "<tbody>" + (rows || "<tr><td colspan=\"10\">No candidates yet.</td></tr>") + "</tbody>",
@@ -608,6 +640,27 @@ async function updateJobStatus(env, jobId, status) {
   });
   if (!job) return null;
   job.status = status;
+  if (!hasGoogle(env)) {
+    await writeFallbackJobs(env, jobs);
+    return job;
+  }
+  const values = [JOBS_HEADER].concat(jobs.map(hydrateJob).map(jobToRow));
+  await valuesUpdate(env, quoteSheet("Jobs") + "!A1:N", values);
+  return job;
+}
+
+async function updateJobSettings(env, jobId, input) {
+  const jobs = await readJobs(env);
+  const job = jobs.find(function(item) {
+    return item.id === jobId;
+  });
+  if (!job) return null;
+  job.estimatedMinutes = input.estimatedMinutes;
+  job.minQuestions = input.minQuestions;
+  job.maxQuestions = Math.max(input.minQuestions, input.maxQuestions);
+  job.passingScore = input.passingScore;
+  job.jd = input.jd;
+  job.marketContext = input.marketContext;
   if (!hasGoogle(env)) {
     await writeFallbackJobs(env, jobs);
     return job;
