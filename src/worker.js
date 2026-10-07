@@ -40,6 +40,7 @@ const MIN_INTERVIEW_MINUTES = 30;
 const DEFAULT_MIN_QUESTIONS = 25;
 const DEFAULT_MAX_QUESTIONS = 30;
 const DEFAULT_PASSING_SCORE = 85;
+const LOGO_URL = "https://cdn.prod.website-files.com/625511bb3e8e42292025b9d8/6a9808ffdc2bb83ea22d9fee_ws-logo-ai-in-motion-dark.svg";
 
 const SAMPLE_JD = [
   "Evaluate Model Outputs: Audit, score, and validate outputs from various Generative AI models and LLM tools to ensure operational accuracy and contextual relevance.",
@@ -357,7 +358,7 @@ function layout(env, title, body, options) {
     "</head>",
     "<body>",
     "<header class=\"topbar\">",
-    "<a class=\"brand\" href=\"/jobs\">" + escapeHtml(appName) + "</a>",
+    "<a class=\"brand\" href=\"/jobs\">" + logoMarkup("brand-logo") + "<span class=\"sr-only\">" + escapeHtml(appName) + "</span></a>",
     "<nav>",
     "<a href=\"/jobs\">Openings</a>",
     admin ? "<a href=\"/admin\">Admin</a><form method=\"post\" action=\"/admin/logout\"><button class=\"ghost\" type=\"submit\">Logout</button></form>" : "<a href=\"/admin/login\">Admin</a>",
@@ -367,6 +368,10 @@ function layout(env, title, body, options) {
     "</body>",
     "</html>"
   ].join("");
+}
+
+function logoMarkup(className) {
+  return "<img class=\"" + escapeHtml(className || "logo") + "\" src=\"" + LOGO_URL + "\" alt=\"Web Spiders AI in Motion\" loading=\"eager\" decoding=\"async\">";
 }
 
 function jobsListView(jobs) {
@@ -404,6 +409,7 @@ function jobDetailView(job, message) {
     "<div class=\"jd\">" + formatText(job.jd) + "</div>",
     "</div>",
     "<aside class=\"panel\">",
+    "<div class=\"panel-logo\">" + logoMarkup("surface-logo") + "</div>",
     "<h2>Start interview</h2>",
     "<form id=\"applyForm\" method=\"post\" action=\"/jobs/" + encodeURIComponent(job.id) + "/start\" enctype=\"multipart/form-data\" class=\"form\">",
     "<label>Name<input name=\"name\" required autocomplete=\"name\"></label>",
@@ -426,6 +432,7 @@ function preInterviewView(job, pending, token) {
   return [
     "<section class=\"preflight\">",
     "<div>",
+    "<div class=\"logo-strip\">" + logoMarkup("surface-logo") + "</div>",
     "<p class=\"eyebrow\">Before you begin</p>",
     "<h1>" + escapeHtml(job.title) + "</h1>",
     "<p class=\"lead\">This screen is not timed. Use it to get ready; the timed interview starts only after the checks pass and you click Begin.</p>",
@@ -514,6 +521,7 @@ function interviewView(job, state, token, message) {
 function completeView(job) {
   return [
     "<section class=\"complete\">",
+    "<div class=\"complete-logo\">" + logoMarkup("surface-logo") + "</div>",
     "<p class=\"eyebrow\">" + escapeHtml(job.title) + "</p>",
     "<h1>Thank you. Your interview is submitted.</h1>",
     "<p>Your responses have been recorded successfully. The recruiter will review the screening analysis along with your resume and get back to you about the next round.</p>",
@@ -542,6 +550,7 @@ function loginPage(env, message) {
   return layout(env, "Admin login", [
     message ? "<div class=\"flash\">" + escapeHtml(message) + "</div>" : "",
     "<section class=\"auth panel\">",
+    "<div class=\"panel-logo\">" + logoMarkup("surface-logo") + "</div>",
     "<h1>Admin login</h1>",
     "<form method=\"post\" action=\"/admin/login\" class=\"form\">",
     "<label>Username<input name=\"username\" required autocomplete=\"username\" value=\"admin\"></label>",
@@ -1669,7 +1678,8 @@ function css() {
     "body{margin:0;color:var(--ink);background:var(--surface);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;letter-spacing:0}",
     "a{color:inherit}",
     ".topbar{position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:24px;padding:14px clamp(16px,4vw,44px);background:rgba(255,255,255,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}",
-    ".brand{font-weight:800;text-decoration:none}",
+    ".brand{display:inline-flex;align-items:center;min-width:168px;text-decoration:none}.brand-logo{display:block;width:176px;max-width:42vw;height:auto}.surface-logo{display:block;width:190px;max-width:100%;height:auto}.panel-logo{margin:0 0 18px}.logo-strip{margin:0 0 18px}.complete-logo{display:flex;justify-content:center;margin:0 0 18px}",
+    ".sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}",
     "nav{display:flex;align-items:center;gap:16px;color:var(--muted);font-size:14px}",
     "nav a,.ghost{color:var(--muted);text-decoration:none}.ghost{border:0;background:transparent;cursor:pointer;font:inherit;padding:0}",
     ".shell{width:min(1120px,calc(100% - 32px));margin:0 auto;padding:34px 0 56px}",
