@@ -40,6 +40,7 @@ const MIN_INTERVIEW_MINUTES = 30;
 const DEFAULT_MIN_QUESTIONS = 25;
 const DEFAULT_MAX_QUESTIONS = 30;
 const DEFAULT_PASSING_SCORE = 85;
+const AI_TIMEOUT_MS = 25000;
 const LOGO_URL = "https://cdn.prod.website-files.com/625511bb3e8e42292025b9d8/6a9808ffdc2bb83ea22d9fee_ws-logo-ai-in-motion-dark.svg";
 
 const SAMPLE_JD = [
@@ -429,13 +430,16 @@ function jobDetailView(job, message) {
 function preInterviewView(job, pending, token) {
   const settings = interviewSettings(job, pending);
   const resumeWords = normalizeText(pending.resumeText || "", 14000).split(/\s+/).filter(Boolean).length;
+  const topics = interviewTopics(job).map(function(topic) {
+    return "<span class=\"topic-chip\">" + escapeHtml(topic) + "</span>";
+  }).join("");
   return [
     "<section class=\"preflight\">",
     "<div>",
     "<div class=\"logo-strip\">" + logoMarkup("surface-logo") + "</div>",
     "<p class=\"eyebrow\">Before you begin</p>",
     "<h1>" + escapeHtml(job.title) + "</h1>",
-    "<p class=\"lead\">This screen is not timed. Use it to get ready; the timed interview starts only after the checks pass and you click Begin.</p>",
+    "<p class=\"lead\">This interview will take at least " + escapeHtml(settings.minMinutes) + " minutes. Each question is paced, and you can answer by typing. Keep this tab open and do not refresh during the interview.</p>",
     "</div>",
     "<div class=\"preflight-grid\">",
     "<section class=\"panel\">",
@@ -447,6 +451,7 @@ function preInterviewView(job, pending, token) {
     "<li>Answer with concrete examples, metrics, tools, tradeoffs, and failure cases. Generic answers are scored strictly.</li>",
     "<li>You cannot see the internal score after submission. The recruiter will review the AI analysis and get back to you.</li>",
     "</ul>",
+    "<div class=\"topic-box\"><strong>You will be interviewed on these topics</strong><div class=\"topic-list\">" + topics + "</div></div>",
     "</section>",
     "<section class=\"panel\">",
     "<h2>Tool check</h2>",
@@ -456,11 +461,12 @@ function preInterviewView(job, pending, token) {
     "<p id=\"checkBrowser\" class=\"check-row pending\">Checking browser storage and timer support</p>",
     "</div>",
     "<p id=\"checkHint\" class=\"hint\">Keep this tab open, stay on a stable connection, and avoid refreshing during the interview.</p>",
-    "<form method=\"post\" action=\"/interview/start\" class=\"form\">",
+    "<form id=\"beginForm\" method=\"post\" action=\"/interview/start\" class=\"form\">",
     "<input type=\"hidden\" name=\"token\" value=\"" + escapeHtml(token) + "\">",
     "<button id=\"beginButton\" class=\"button full\" type=\"submit\" disabled>Run checks first</button>",
     "</form>",
     "<button id=\"retryChecks\" class=\"button secondary full\" type=\"button\">Retry checks</button>",
+    "<p id=\"launchStatus\" class=\"hint hidden\">Preparing your personalized question set. Please wait on this page.</p>",
     "</section>",
     "</div>",
     "</section>",
@@ -474,9 +480,11 @@ function preflightScript(resumeWords) {
   return [
     "<script>",
     "(function(){",
+    "var form=document.getElementById('beginForm');",
     "var button=document.getElementById('beginButton');",
     "var retry=document.getElementById('retryChecks');",
     "var hint=document.getElementById('checkHint');",
+    "var launchStatus=document.getElementById('launchStatus');",
     "function set(id,ok,text){var el=document.getElementById(id);el.className='check-row '+(ok?'ok':'bad');el.textContent=text;return ok;}",
     "async function run(){button.disabled=true;button.textContent='Running checks...';hint.textContent='Checking the tools needed for the timed interview.';var ok=true;",
     "ok=set('checkResume'," + JSON.stringify(resumeOk) + "," + JSON.stringify(resumeText) + ")&&ok;",
@@ -485,9 +493,31 @@ function preflightScript(resumeWords) {
     "button.disabled=!ok;button.textContent=ok?'Begin timed interview':'Checks failed';hint.textContent=ok?'You are ready. The timer starts after you click Begin.':'Fix the failed check, then retry.';",
     "}",
     "retry.addEventListener('click',run);run();",
+    "form.addEventListener('submit',function(){button.disabled=true;retry.disabled=true;button.textContent='Preparing interview...';hint.textContent='Your interview is being prepared. This can take a few seconds.';launchStatus.className='hint';launchStatus.textContent='Preparing your personalized question set. Please do not refresh or click back.';});",
     "})();",
     "</script>"
   ].join("");
+}
+
+function interviewTopics(job) {
+  const text = normalizeText(((job && job.title) || "") + "\n" + ((job && job.jd) || "") + "\n" + ((job && job.marketContext) || ""), 16000).toLowerCase();
+  if (text.indexOf("ai") !== -1 || text.indexOf("llm") !== -1 || text.indexOf("workflow") !== -1) {
+    return [
+      "AI Output Evaluation",
+      "Prompt and Rubric Design",
+      "Workflow QA",
+      "Data Compliance",
+      "Failure Analysis",
+      "Operational Judgment"
+    ];
+  }
+  return [
+    "Role Fundamentals",
+    "Practical Experience",
+    "Analytical Judgment",
+    "Quality and Detail",
+    "Communication Under Constraint"
+  ];
 }
 
 function interviewView(job, state, token, message) {
@@ -501,7 +531,6 @@ function interviewView(job, state, token, message) {
   const remainingSeconds = Math.max(0, Math.ceil((new Date(endAt).getTime() - Date.now()) / 1000));
   return [
     message ? "<div class=\"flash\">" + escapeHtml(message) + "</div>" : "",
-    state.aiNote ? "<div class=\"flash\">" + escapeHtml(state.aiNote) + "</div>" : "",
     "<section class=\"interview\">",
     "<div class=\"progress\"><span style=\"width:" + pct + "%\"></span></div>",
     "<p class=\"eyebrow\">" + escapeHtml(job.title) + " · Question " + current + " of " + total + "</p>",
@@ -1290,7 +1319,7 @@ async function openAiJson(env, messages, temperature) {
     response_format: { type: "json_object" }
   };
   if (supportsCustomTemperature(model)) requestBody.temperature = temperature;
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const response = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: "Bearer " + env.OPENAI_API_KEY,
@@ -1304,13 +1333,28 @@ async function openAiJson(env, messages, temperature) {
   return parseJsonObject(content || "");
 }
 
+async function fetchWithTimeout(url, options) {
+  const controller = new AbortController();
+  const timeout = setTimeout(function() {
+    controller.abort();
+  }, AI_TIMEOUT_MS);
+  try {
+    return await fetch(url, Object.assign({}, options, { signal: controller.signal }));
+  } catch (error) {
+    if (error && error.name === "AbortError") throw new Error("AI request timed out");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function supportsCustomTemperature(model) {
   return !/^gpt-[56]/.test(String(model || ""));
 }
 
 async function openRouterJson(env, messages, temperature) {
   if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not configured");
-  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  const response = await fetchWithTimeout("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: "Bearer " + env.OPENROUTER_API_KEY,
@@ -1700,7 +1744,7 @@ function css() {
     ".jd{margin-top:18px;color:#344054;line-height:1.6}.jd.compact{max-height:300px;overflow:auto}",
     ".flash{margin:0 0 18px;padding:12px 14px;border:1px solid #fedf89;border-radius:6px;background:#fffaeb;color:#93370d}",
     ".progress{height:8px;border-radius:999px;overflow:hidden;background:#e6ebf2;margin-bottom:24px}.progress span{display:block;height:100%;background:var(--brand)}",
-    ".clean-list{margin:0;padding-left:18px;color:#344054;line-height:1.65}.checks{display:grid;gap:10px;margin:14px 0}.check-row{margin:0;padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc;color:#475467}.check-row.ok{border-color:#9dd4c9;background:#eefaf7;color:#115e59}.check-row.bad{border-color:#f6c7a7;background:#fff4ed;color:#93370d}.next-card{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;text-align:left}.next-card p{margin:6px 0 0}",
+    ".clean-list{margin:0;padding-left:18px;color:#344054;line-height:1.65}.topic-box{margin-top:22px;padding:16px;border:1px solid #c8d1ff;border-radius:8px;background:#f4f6ff}.topic-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.topic-chip{display:inline-flex;align-items:center;min-height:34px;padding:6px 10px;border:1px solid #aab8ff;border-radius:6px;background:#eef1ff;color:#1d2939;font-weight:700}.checks{display:grid;gap:10px;margin:14px 0}.check-row{margin:0;padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc;color:#475467}.check-row.ok{border-color:#9dd4c9;background:#eefaf7;color:#115e59}.check-row.bad{border-color:#f6c7a7;background:#fff4ed;color:#93370d}.hidden{display:none}.next-card{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;text-align:left}.next-card p{margin:6px 0 0}",
     ".table-wrap{overflow-x:auto;background:white;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:13px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc;color:#475467;font-size:12px;text-transform:uppercase;letter-spacing:0}tr:last-child td{border-bottom:0}",
     ".status-form{display:flex;gap:10px;align-items:center}.empty{padding:46px 0;text-align:center}.complete{max-width:680px;margin:8vh auto 0;text-align:center}.section-gap{margin-top:24px}.pill{display:inline-flex;padding:3px 8px;border-radius:999px;background:#eef6f5;color:#115e59;font-weight:800;font-size:12px}",
     "@media(max-width:760px){.topbar,.row,.job-card,.status-form{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid{grid-template-columns:1fr}.page-head h1,.split h1,.interview h1,.complete h1,.auth h1,.preflight h1{font-size:32px}}"
