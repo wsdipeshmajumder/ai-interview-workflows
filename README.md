@@ -24,7 +24,7 @@ Live app:
 
 2. Create .dev.vars:
 
-   ADMIN_PASSWORD=admin
+   ADMIN_PASSWORD=your-admin-password
    SESSION_SECRET=replace-with-a-long-random-string
    OPENAI_API_KEY=your-openai-key
    OPENROUTER_API_KEY=your-openrouter-key
@@ -37,7 +37,7 @@ Live app:
 
 Open http://localhost:8787.
 
-Default admin user is admin. The password comes from ADMIN_PASSWORD; use admin for quick local testing.
+Default admin user is admin. The password comes from ADMIN_PASSWORD.
 
 ## Cloudflare secrets
 
@@ -69,6 +69,6 @@ The sheet ID is already configured:
 ## Flow
 
 1. Recruiter logs in at /admin/login.
-2. Recruiter creates a job and pastes the JD.
+2. Recruiter clicks Add new JD, pastes any role JD, and sets the interview variables.
 3. Candidate opens /jobs, selects an opening, uploads a resume, and completes the AI interview.
 4. Recruiter sees candidate scores in /admin; Google Sheets receives the full details.

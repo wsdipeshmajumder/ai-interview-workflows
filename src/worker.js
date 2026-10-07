@@ -412,7 +412,7 @@ function layout(env, title, body, options) {
     "<a class=\"brand\" href=\"/jobs\">" + logoMarkup("brand-logo") + "<span class=\"sr-only\">" + escapeHtml(appName) + "</span></a>",
     "<nav>",
     "<a href=\"/jobs\">Openings</a>",
-    admin ? "<a href=\"/admin\">Admin</a><form method=\"post\" action=\"/admin/logout\"><button class=\"ghost\" type=\"submit\">Logout</button></form>" : "<a href=\"/admin/login\">Admin</a>",
+    admin ? "<a href=\"/admin\">Admin</a><form method=\"post\" action=\"/admin/logout\"><button class=\"ghost\" type=\"submit\">Logout</button></form>" : "",
     "</nav>",
     "</header>",
     "<main class=\"shell\">" + body + "</main>",
@@ -498,7 +498,7 @@ function preInterviewView(job, pending, token) {
     "<ul class=\"clean-list\">",
     "<li>Minimum " + escapeHtml(settings.minMinutes) + " minutes once the interview starts.</li>",
     "<li>" + escapeHtml(questionRangeText(settings)) + " across baseline, intermediate, advanced, and pressure-test questions.</li>",
-    "<li>Questions are based on your resume, the JD, and current AI workflow expectations.</li>",
+    "<li>Questions are based on your resume, the JD, and current expectations for this role.</li>",
     "<li>Answer with concrete examples, metrics, tools, tradeoffs, and failure cases. Generic answers are scored strictly.</li>",
     "<li>Tab switching, focus loss, refresh attempts, and copy/paste attempts are logged for recruiter review.</li>",
     "<li>You cannot see the internal score after submission. The recruiter will review the AI analysis and get back to you.</li>",
@@ -724,7 +724,7 @@ function loginPage(env, message) {
     "<div class=\"panel-logo\">" + logoMarkup("surface-logo") + "</div>",
     "<h1>Admin login</h1>",
     "<form method=\"post\" action=\"/admin/login\" class=\"form\">",
-    "<label>Username<input name=\"username\" required autocomplete=\"username\" value=\"admin\"></label>",
+    "<label>Username<input name=\"username\" required autocomplete=\"username\"></label>",
     "<label>Password<input name=\"password\" type=\"password\" required autocomplete=\"current-password\"></label>",
     "<button class=\"button full\" type=\"submit\">Login</button>",
     "</form>",
@@ -753,7 +753,7 @@ function adminHomeView(jobs, counts, mode) {
     durable ? "" : "<div class=\"flash\">Google Sheets and KV are not configured. Data is using a temporary Worker memory fallback.</div>",
     "<section class=\"page-head row\">",
     "<div><h1>Admin</h1><p>Storage: " + escapeHtml(mode) + "</p></div>",
-    "<a class=\"button\" href=\"/admin/jobs/new\">New job</a>",
+    "<a class=\"button\" href=\"/admin/jobs/new\">Add new JD</a>",
     "</section>",
     "<div class=\"table-wrap\"><table>",
     "<thead><tr><th>Job</th><th>Status</th><th>Positions</th><th>Pacing</th><th>Pass</th><th>Retakes</th><th>Candidates</th><th>Sheet tab</th></tr></thead>",
@@ -763,15 +763,16 @@ function adminHomeView(jobs, counts, mode) {
 }
 
 function newJobPage(env, admin, defaults, message) {
-  return layout(env, "New job", [
+  defaults = defaults || {};
+  return layout(env, "Add new JD", [
     message ? "<div class=\"flash\">" + escapeHtml(message) + "</div>" : "",
-    "<section class=\"page-head\"><h1>Create job</h1><p>Each job creates one tab in the configured Google Sheet.</p></section>",
+    "<section class=\"page-head\"><h1>Add new JD</h1><p>Paste any role JD and set the interview pacing. Each JD creates one tab in the configured Google Sheet.</p></section>",
     "<form method=\"post\" action=\"/admin/jobs\" class=\"form wide\">",
     "<div class=\"grid-2\">",
-    "<label>Title<input name=\"title\" required value=\"" + escapeHtml(defaults.title || "Analyst - AI Workflows") + "\"></label>",
-    "<label>Department<input name=\"department\" value=\"" + escapeHtml(defaults.department || "Operations") + "\"></label>",
-    "<label>Location<input name=\"location\" value=\"" + escapeHtml(defaults.location || "Kolkata / On-site") + "\"></label>",
-    "<label>Positions<input name=\"positions\" type=\"number\" min=\"1\" value=\"" + escapeHtml(defaults.positions || 5) + "\"></label>",
+    "<label>Title<input name=\"title\" required value=\"" + escapeHtml(defaults.title || "") + "\" placeholder=\"Role title\"></label>",
+    "<label>Department<input name=\"department\" value=\"" + escapeHtml(defaults.department || "") + "\" placeholder=\"Team or function\"></label>",
+    "<label>Location<input name=\"location\" value=\"" + escapeHtml(defaults.location || "") + "\" placeholder=\"Location or remote policy\"></label>",
+    "<label>Positions<input name=\"positions\" type=\"number\" min=\"1\" value=\"" + escapeHtml(defaults.positions || 1) + "\"></label>",
     "<label>Minimum minutes<input name=\"estimatedMinutes\" type=\"number\" min=\"30\" max=\"120\" value=\"" + escapeHtml(defaults.estimatedMinutes || MIN_INTERVIEW_MINUTES) + "\"></label>",
     "<label>Minimum questions<input name=\"minQuestions\" type=\"number\" min=\"1\" max=\"80\" value=\"" + escapeHtml(defaults.minQuestions || DEFAULT_MIN_QUESTIONS) + "\"></label>",
     "<label>Maximum questions<input name=\"maxQuestions\" type=\"number\" min=\"1\" max=\"100\" value=\"" + escapeHtml(defaults.maxQuestions || DEFAULT_MAX_QUESTIONS) + "\"></label>",
@@ -779,9 +780,9 @@ function newJobPage(env, admin, defaults, message) {
     "<label>Status<select name=\"status\"><option value=\"active\">active</option><option value=\"closed\">closed</option></select></label>",
     "<label class=\"check\"><input name=\"allowRetakes\" type=\"checkbox\" value=\"1\"" + (settingBool(defaults.allowRetakes) ? " checked" : "") + "> Allow repeat attempts for this opening</label>",
     "</div>",
-    "<label>Job description<textarea name=\"jd\" rows=\"12\" required>" + escapeHtml(defaults.jd || SAMPLE_JD) + "</textarea></label>",
-    "<label>Market trends and interviewer guidance<textarea name=\"marketContext\" rows=\"5\">" + escapeHtml(defaults.marketContext || env.DEFAULT_MARKET_CONTEXT || "") + "</textarea></label>",
-    "<button class=\"button\" type=\"submit\">Create job</button>",
+    "<label>Job description<textarea name=\"jd\" rows=\"12\" required placeholder=\"Paste the JD here. The interview will adapt to this JD, the resume, and the guidance below.\">" + escapeHtml(defaults.jd || "") + "</textarea></label>",
+    "<label>Market trends and interviewer guidance<textarea name=\"marketContext\" rows=\"5\" placeholder=\"Optional: add role-specific trends, tools, screening emphasis, disqualifiers, or must-have skills.\">" + escapeHtml(defaults.marketContext || "") + "</textarea></label>",
+    "<button class=\"button\" type=\"submit\">Add JD</button>",
     "</form>"
   ].join(""), { admin: admin });
 }
@@ -1448,21 +1449,21 @@ function extraProbeQuestion(count) {
       timeBoxMinutes: 2
     },
     {
-      question: "You inherit an AI workflow that looks accurate in demos but fails in production. Give a step-by-step triage plan for the first two hours.",
-      competency: "Production judgment",
-      expectedSignals: "Logs, sampling, source comparison, rollback criteria, stakeholder communication, and root-cause isolation.",
+      question: "You inherit a process that looks fine in a demo but fails in real use. Give a step-by-step triage plan for the first two hours.",
+      competency: "Operational judgment",
+      expectedSignals: "Evidence gathering, sampling, rollback or containment criteria, stakeholder communication, and root-cause isolation.",
       complexity: "advanced",
       timeBoxMinutes: 2
     },
     {
-      question: "Describe the toughest tradeoff between speed and correctness in AI operations. Where would you refuse to automate?",
+      question: "Describe the toughest tradeoff between speed and correctness in this role. Where would you refuse to proceed without more evidence?",
       competency: "Risk judgment",
       expectedSignals: "Concrete boundaries, compliance awareness, business impact, and escalation discipline.",
       complexity: "stress",
       timeBoxMinutes: 2
     },
     {
-      question: "Design a pass/fail rubric for AI-generated sales outreach. Include disqualifying errors, not just quality positives.",
+      question: "Design a pass/fail rubric for one critical task in this role. Include disqualifying errors, not just quality positives.",
       competency: "Rubric design",
       expectedSignals: "Objective criteria, severe error classes, examples, thresholds, and repeatable scoring.",
       complexity: "advanced",
@@ -1478,10 +1479,10 @@ async function generateInterview(env, job, resumeText) {
     "Create a structured, high-bar screening interview for the candidate.",
     "Use the job description, resume, and market context together.",
     "The interview must be difficult, deeply probing, and designed to reveal weak fit quickly through job-related evidence.",
-    "Mix resume-specific probes, JD-specific scenarios, compliance checks, data-quality cases, workflow judgment, failure analysis, quantified rubric design, and job-related disqualification traps based on real operational mistakes.",
+    "Mix resume-specific probes, JD-specific scenarios, compliance checks, quality cases, process judgment, failure analysis, quantified rubric design, and job-related disqualification traps based on real operational mistakes.",
     "Use a mixed assessment format: about 30 percent multiple-choice questions and 70 percent written scenario questions. MCQs must test judgment, not trivia, and should still require reasoning in the UI.",
-    "Use differing complexities: baseline evidence checks, intermediate workflow diagnosis, advanced incident/rubric design, and stress questions that test judgment under pressure.",
-    "For workflow, data-quality, compliance, support, CRM, or finance scenario questions, include a concise Mermaid flowchart in diagramMermaid where it helps test process judgment. Use diagramMermaid on about 5 questions, not every question.",
+    "Use differing complexities: baseline evidence checks, intermediate process diagnosis, advanced incident/rubric design, and stress questions that test judgment under pressure.",
+    "For process, data-quality, compliance, handoff, customer, finance, operations, or technical scenario questions, include a concise Mermaid flowchart in diagramMermaid where it helps test judgment. Use diagramMermaid on about 5 questions, not every question.",
     "Ask for concrete examples, metrics, edge cases, evidence, and tradeoffs. Avoid trivia, personal questions, or discriminatory questions.",
     "Return only JSON with this shape:",
     "{\"estimatedMinutes\":number,\"questions\":[{\"type\":\"free_text|mcq\",\"question\":\"string\",\"options\":[\"string\"],\"correctOption\":\"A|B|C|D\",\"competency\":\"string\",\"complexity\":\"baseline|intermediate|advanced|stress\",\"expectedSignals\":\"string\",\"timeBoxMinutes\":number,\"diagramMermaid\":\"optional mermaid flowchart string\"}]}",
@@ -1495,7 +1496,7 @@ async function generateInterview(env, job, resumeText) {
   ].join("\n\n");
   try {
     const result = await aiJson(env, [
-      { role: "system", content: "You are an expert interviewer for AI workflow analyst roles. Return only valid JSON." },
+      { role: "system", content: "You are an expert interviewer. Adapt the interview to the provided JD, resume, and market context. Return only valid JSON." },
       { role: "user", content: prompt }
     ], 0.35);
     if (!result.questions || !Array.isArray(result.questions) || result.questions.length < 1) throw new Error("No questions returned");
@@ -1505,7 +1506,7 @@ async function generateInterview(env, job, resumeText) {
       questions: questions
     };
   } catch (error) {
-    const fallback = fallbackInterview(job);
+    const fallback = fallbackInterview(job, resumeText);
     fallback.note = "Using fallback questions because AI generation is unavailable: " + error.message;
     return fallback;
   }
@@ -1516,13 +1517,13 @@ async function evaluateInterview(env, job, state) {
   const prompt = [
     "Evaluate this candidate for the role.",
     "Score only from the resume and answers. Be strict, fair, evidence-based, and selective.",
-    "Default to disqualifying weak, generic, evasive, or unverifiable answers. Reward specific operational evidence, measurable QA discipline, privacy judgment, and ability to translate failures into engineering feedback.",
+    "Default to disqualifying weak, generic, evasive, or unverifiable answers. Reward role-specific evidence, measurable execution discipline, quality judgment, privacy/compliance awareness, and ability to translate failures into practical next steps.",
     "For MCQ answers, check the selected option against the question's correctOption and also evaluate the candidate's reasoning. Wrong MCQ choices on role-critical controls should materially reduce the score.",
     "Hire/Strong Hire is a pass. Maybe/No Hire is not a pass.",
     "Return only JSON with this shape:",
     "{\"score\":number,\"recommendation\":\"Strong Hire|Hire|Maybe|No Hire\",\"summary\":\"string\",\"good\":[\"string\"],\"bad\":[\"string\"],\"fitCriteria\":[{\"criterion\":\"string\",\"met\":boolean,\"evidence\":\"string\"}],\"strengths\":[\"string\"],\"risks\":[\"string\"],\"followUpQuestions\":[\"string\"],\"rubric\":[{\"area\":\"string\",\"score\":number,\"comment\":\"string\"}]}",
     "Score out of 100 using this hard bar: " + settings.strongHireScore + "+ Strong Hire, " + settings.passingScore + "-" + (settings.strongHireScore - 1) + " Hire, " + settings.maybeScore + "-" + (settings.passingScore - 1) + " Maybe, below " + settings.maybeScore + " No Hire. Be comfortable giving No Hire.",
-    "A passing candidate must meet these criteria: demonstrated AI output audit/rubric skill, role-relevant workflow evidence, privacy/compliance judgment, ability to document failures for engineering, and concrete metrics or examples. Missing evidence on any major criterion should prevent Hire.",
+    "A passing candidate must meet criteria inferred from the JD, resume, and market context: role fundamentals, practical evidence, quality discipline, risk/privacy/compliance judgment where relevant, communication, and concrete metrics or examples. Missing evidence on any major criterion should prevent Hire.",
     "JOB:\n" + job.title,
     "JD:\n" + normalizeText(job.jd, 9000),
     "MARKET CONTEXT:\n" + normalizeText(job.marketContext || env.DEFAULT_MARKET_CONTEXT || "", 3000),
@@ -1566,7 +1567,47 @@ async function aiJson(env, messages, temperature) {
 }
 
 async function openAiJson(env, messages, temperature) {
-  const model = env.OPENAI_MODEL || "gpt-4o-mini";
+  const model = env.OPENAI_MODEL || "gpt-5.6-luna";
+  if (usesResponsesApi(model)) return openAiResponsesJson(env, model, messages);
+  return openAiChatJson(env, model, messages, temperature);
+}
+
+async function openAiResponsesJson(env, model, messages) {
+  const requestBody = {
+    model: model,
+    input: messages.map(function(message) {
+      return {
+        role: message.role || "user",
+        content: [
+          {
+            type: "input_text",
+            text: message.content || ""
+          }
+        ]
+      };
+    }),
+    reasoning: {
+      effort: env.OPENAI_REASONING_EFFORT || "none"
+    },
+    text: {
+      format: { type: "json_object" }
+    },
+    store: false
+  };
+  const response = await fetchWithTimeout("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + env.OPENAI_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(requestBody)
+  });
+  if (!response.ok) throw new Error("OpenAI Responses " + response.status + ": " + (await response.text()).slice(0, 220));
+  const data = await response.json();
+  return parseJsonObject(extractResponsesText(data));
+}
+
+async function openAiChatJson(env, model, messages, temperature) {
   const requestBody = {
     model: model,
     messages: messages,
@@ -1585,6 +1626,23 @@ async function openAiJson(env, messages, temperature) {
   const data = await response.json();
   const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
   return parseJsonObject(content || "");
+}
+
+function usesResponsesApi(model) {
+  return /^gpt-[56]/.test(String(model || ""));
+}
+
+function extractResponsesText(data) {
+  if (typeof data.output_text === "string") return data.output_text;
+  const chunks = [];
+  (Array.isArray(data.output) ? data.output : []).forEach(function(item) {
+    if (typeof item.text === "string") chunks.push(item.text);
+    (Array.isArray(item.content) ? item.content : []).forEach(function(content) {
+      if (typeof content.text === "string") chunks.push(content.text);
+      if (typeof content.output_text === "string") chunks.push(content.output_text);
+    });
+  });
+  return chunks.join("");
 }
 
 async function fetchWithTimeout(url, options) {
@@ -1736,16 +1794,16 @@ function integrityRiskLabel(events) {
   return "Clear";
 }
 
-function fallbackInterview(job) {
+function fallbackInterview(job, resumeText) {
   const settings = interviewSettings(job);
   return {
     estimatedMinutes: settings.minMinutes,
-    questions: paceQuestions(fallbackQuestions(job, settings.targetQuestions), settings)
+    questions: paceQuestions(fallbackQuestions(job, settings.targetQuestions, resumeText), settings)
   };
 }
 
-function fallbackQuestions(job, count) {
-  const pool = fallbackQuestionPool(job);
+function fallbackQuestions(job, count, resumeText) {
+  const pool = fallbackQuestionPool(job, resumeText);
   const questions = [];
   for (let index = 0; index < count; index += 1) {
     const base = pool[index % pool.length];
@@ -1756,39 +1814,67 @@ function fallbackQuestions(job, count) {
   return questions;
 }
 
-function fallbackQuestionPool(job) {
+function extractKeywords(text, limit) {
+  const stop = {
+    the: true, and: true, for: true, with: true, that: true, this: true, from: true, into: true, your: true, you: true,
+    are: true, will: true, should: true, must: true, have: true, has: true, role: true, work: true, task: true,
+    candidate: true, candidates: true, job: true, description: true, using: true, based: true, current: true,
+    ensure: true, various: true, internal: true, business: true, team: true, teams: true, ability: true
+  };
+  const counts = {};
+  const words = (normalizeText(text || "", 18000).toLowerCase().match(/[a-z][a-z0-9+#.-]{2,}/g) || []).filter(function(word) {
+    return !stop[word] && word.length > 2 && !/^\d+$/.test(word);
+  });
+  words.forEach(function(word) {
+    counts[word] = (counts[word] || 0) + 1;
+  });
+  return Object.keys(counts).sort(function(a, b) {
+    return counts[b] - counts[a] || a.localeCompare(b);
+  }).slice(0, limit || 6);
+}
+
+function keywordPhrase(keywords, fallback) {
+  const list = (keywords || []).filter(Boolean).slice(0, 6);
+  if (!list.length) return fallback;
+  if (list.length === 1) return list[0];
+  return list.slice(0, -1).join(", ") + ", and " + list[list.length - 1];
+}
+
+function fallbackQuestionPool(job, resumeText) {
   const title = (job && job.title) || "this role";
+  const roleFocus = keywordPhrase(extractKeywords(title + "\n" + ((job && job.jd) || ""), 6), "the JD priorities");
+  const marketFocus = keywordPhrase(extractKeywords((job && job.marketContext) || "", 4), "current market expectations");
+  const resumeFocus = keywordPhrase(extractKeywords(resumeText || "", 6), "the strongest resume claims");
   return [
-    { question: "Walk me through the strongest evidence that your past work maps to " + title + ". Avoid generalities; give tools, volume, error rates, and outcomes.", competency: "Resume evidence", complexity: "baseline", expectedSignals: "Specific metrics, named workflows, honest scope, measurable outcomes." },
-    { question: "Which part of the JD is closest to work you have actually done, and which part is weakest for you? Give evidence for both.", competency: "Role fit honesty", complexity: "baseline", expectedSignals: "Self-awareness, concrete examples, and no inflated claims." },
-    { question: "Explain how you would audit one AI-generated answer for factual accuracy, contextual relevance, tone, and business risk.", competency: "AI output evaluation", complexity: "baseline", expectedSignals: "Source checks, rubric criteria, severity labels, and repeatability." },
-    { type: "mcq", question: "An AI-generated support response is polite and fluent but includes one unsupported refund promise. What is the correct QA decision?", options: ["Pass because tone and grammar are strong", "Fail or escalate because unsupported commitments are business-risk defects", "Pass if the customer sounds upset", "Ignore it if the model confidence is high"], correctOption: "B", competency: "Rubric design", complexity: "intermediate", expectedSignals: "Recognizes disqualifying business-risk defects over surface fluency." },
-    { question: "Review the CRM enrichment workflow shown below. Where can silent bad data enter, what controls would you add, and how would you prove the fix worked?", competency: "Data quality incident response", complexity: "advanced", expectedSignals: "Sampling, source comparison, rollback, audit logs, measurable validation.", diagramMermaid: "flowchart LR\nA[Lead record] --> B[AI enrichment]\nB --> C[CRM update]\nC --> D[Sales queue]\nB --> E[Confidence score]\nE --> F{Below threshold?}\nF -- Yes --> G[Human review]\nF -- No --> C" },
-    { question: "Use the finance extraction diagram below. Identify the highest-risk handoff, the control you would insert, and the evidence needed before reporting.", competency: "Financial validation", complexity: "advanced", expectedSignals: "Reconciliation, source evidence, approval thresholds, exception handling.", diagramMermaid: "flowchart TD\nA[Invoice PDF] --> B[AI field extraction]\nB --> C[Bookkeeping category]\nC --> D[Monthly report]\nB --> E[Exception queue]\nE --> F[Human validation]\nF --> D" },
-    { question: "Show how you would improve a weak prompt for lead scoring or outreach drafting. What test set would prove improvement?", competency: "Prompt testing", complexity: "intermediate", expectedSignals: "Before/after thinking, test cases, false positives, performance metrics." },
-    { question: "A model gives a confident but false summary of a client onboarding call. Use the diagram to explain what you would log for engineering and where you would add a stop-check.", competency: "Failure documentation", complexity: "intermediate", expectedSignals: "Inputs, expected vs actual, reproduction, frequency, severity, business impact.", diagramMermaid: "flowchart LR\nA[Call transcript] --> B[AI summary]\nB --> C[CSM notes]\nC --> D[Client onboarding plan]\nB --> E[QA sample]\nE --> F{False claim?}\nF -- Yes --> G[Bug report]" },
-    { type: "mcq", question: "A workflow sends raw customer emails, invoices, and phone numbers to an AI tool for enrichment. Which control is most important before production use?", options: ["Increase the model temperature so outputs are varied", "Mask or minimize sensitive data and enforce access/retention controls", "Ask reviewers to delete bad outputs manually", "Only run the workflow after business hours"], correctOption: "B", competency: "Privacy and governance", complexity: "baseline", expectedSignals: "Prioritizes PII minimization, retention, access, and governance controls." },
-    { question: "You have 500 AI outputs to rank by quality today. Based on the diagram, explain your batching, sampling, labeling, and reviewer calibration process.", competency: "High-volume execution", complexity: "advanced", expectedSignals: "Batching, inter-rater checks, examples, fatigue controls, consistency.", diagramMermaid: "flowchart TD\nA[500 AI outputs] --> B[Batch by workflow]\nB --> C[Gold-set calibration]\nC --> D[Reviewer labeling]\nD --> E[Disagreement review]\nE --> F[Final ranked set]\nE --> C" },
-    { question: "Tell me about a time you found a systematic process error. What did you do after identifying it?", competency: "Operational ownership", complexity: "baseline", expectedSignals: "Root cause, stakeholder communication, durable fix, measured improvement." },
-    { type: "mcq", question: "A repeated AI failure is reproducible with three examples and clear business impact. What should the analyst send engineering first?", options: ["A vague message saying the AI is bad", "Full production access for all reviewers", "Reproduction steps, inputs, expected versus actual outputs, frequency, severity, and impact", "Only screenshots without source records"], correctOption: "C", competency: "Bridge operations and tech", complexity: "intermediate", expectedSignals: "Understands actionable engineering handoff evidence." },
-    { question: "If your manager asks you to approve outputs you have not validated because the offer deadline is today, what do you do?", competency: "Integrity under pressure", complexity: "stress", expectedSignals: "Risk framing, escalation, partial approval boundaries, refusal when needed." },
-    { question: "Take one AI workflow from the JD and define five measurable quality benchmarks for it.", competency: "Quality benchmark design", complexity: "intermediate", expectedSignals: "Measurable metrics, thresholds, sample design, and operational ROI." },
-    { question: "A sales leader complains that AI outreach drafts sound polished but do not convert. What evidence do you collect before changing the workflow?", competency: "Sales workflow diagnosis", complexity: "advanced", expectedSignals: "Conversion data, segmentation, message quality, CRM fields, and test design." },
-    { question: "How would you identify hallucinations that are rare but high impact in a post-sales automation pipeline?", competency: "Rare-risk detection", complexity: "advanced", expectedSignals: "Targeted sampling, severe-case taxonomy, escalation, and trend reporting." },
-    { question: "Give a bad example of a prompt instruction for financial categorization, then rewrite it into a testable instruction.", competency: "Prompt framework refinement", complexity: "intermediate", expectedSignals: "Concrete rewrite, edge cases, source hierarchy, and validation criteria." },
-    { question: "The model output passes your checklist but a client says it is wrong. How do you investigate without becoming defensive?", competency: "Client-facing judgment", complexity: "stress", expectedSignals: "Evidence review, humility, communication, correction path, and prevention." },
-    { question: "Which spreadsheet checks would you run before trusting an AI-generated financial report?", competency: "Spreadsheet and finance QA", complexity: "intermediate", expectedSignals: "Totals, reconciliations, outliers, missing values, duplicates, and audit trail." },
-    { question: "Explain how you would categorize AI failures from the workflow below so engineering can prioritize fixes instead of reading anecdotes.", competency: "Issue taxonomy", complexity: "advanced", expectedSignals: "Severity, frequency, reproducibility, impact, owners, and examples.", diagramMermaid: "flowchart LR\nA[AI output] --> B[Reviewer audit]\nB --> C{Failure type}\nC --> D[Fact error]\nC --> E[Policy risk]\nC --> F[Missing context]\nC --> G[Tone issue]\nD --> H[Engineering queue]\nE --> H\nF --> H\nG --> H" },
-    { question: "A candidate answer looks fluent but contains no evidence. How should the evaluator score it, and why?", competency: "Evaluation discipline", complexity: "baseline", expectedSignals: "Evidence standard, scoring consistency, and resistance to style bias." },
-    { question: "What is your process for calibrating multiple reviewers so quality scores are consistent across a campaign?", competency: "Reviewer calibration", complexity: "advanced", expectedSignals: "Gold set, disagreements, examples, thresholds, and periodic recalibration." },
-    { question: "You discover that an AI workflow improves speed but increases compliance risk. What recommendation do you make?", competency: "Risk tradeoff", complexity: "stress", expectedSignals: "Stop/go criteria, mitigation, stakeholder framing, and governance." },
-    { question: "Name three edge cases for automated lead scoring and how each should be represented in a test set.", competency: "Edge-case coverage", complexity: "intermediate", expectedSignals: "Concrete edge cases, expected outcomes, and regression testing." },
-    { question: "Describe a one-day audit plan for the sales, support, and finance AI workflows shown below. What do you inspect first and why?", competency: "Execution planning", complexity: "advanced", expectedSignals: "Prioritization, data access, sampling, stakeholders, and first deliverables.", diagramMermaid: "flowchart TD\nA[Business inputs] --> B[Sales AI workflow]\nA --> C[Support AI workflow]\nA --> D[Finance AI workflow]\nB --> E[CRM actions]\nC --> F[Customer notes]\nD --> G[Reports]\nE --> H[QA dashboard]\nF --> H\nG --> H" },
-    { type: "mcq", question: "If the model output and source system disagree, what is the safest source-of-truth policy?", options: ["Trust the AI if it sounds confident", "Trust the newest-looking value", "Use the authoritative source record, document the mismatch, and escalate if the workflow keeps disagreeing", "Average both values"], correctOption: "C", competency: "Source discipline", complexity: "baseline", expectedSignals: "Uses authoritative records and escalation instead of confidence or style." },
-    { question: "What would make you disqualify an AI-generated customer success log even if it is grammatically perfect?", competency: "Disqualifying defects", complexity: "intermediate", expectedSignals: "Wrong facts, missing obligations, privacy leaks, unsupported claims, tone risk." },
-    { question: "How would you measure whether prompt changes improved operational ROI rather than only making outputs sound better?", competency: "ROI measurement", complexity: "advanced", expectedSignals: "Baseline, controlled test, speed, accuracy, rework, conversion, support load." },
-    { type: "mcq", question: "You have ten minutes before a same-day offer decision. Which signal should carry the most weight for this role?", options: ["Confident wording and long answers", "Evidence-backed examples with metrics, controls, and failure handling", "How quickly the candidate answered", "Whether they used popular AI buzzwords"], correctOption: "B", competency: "Screening judgment", complexity: "stress", expectedSignals: "Values evidence density and role-critical controls over style." },
-    { question: "Give your first-week plan for this role, including what you would audit, what metrics you would define, and what would disqualify a workflow from automation.", competency: "Readiness and judgment", complexity: "advanced", expectedSignals: "Structured plan, quality benchmarks, workflow triage, practical priorities." }
+    { question: "Your resume signals " + resumeFocus + ". Map those claims to " + title + " and the JD priorities around " + roleFocus + ". Avoid generalities; give tools, volume, error rates, constraints, and outcomes.", competency: "Resume evidence", complexity: "baseline", expectedSignals: "Specific metrics, named tasks, honest scope, and measurable outcomes." },
+    { question: "The JD appears to emphasize " + roleFocus + ". Which part is closest to work you have actually done, and which part is weakest for you? Give evidence for both.", competency: "Role fit honesty", complexity: "baseline", expectedSignals: "Self-awareness, concrete examples, and no inflated claims." },
+    { question: "Pick one responsibility from the JD related to " + roleFocus + " and explain the exact steps you would follow to deliver it in your first week.", competency: "Execution planning", complexity: "baseline", expectedSignals: "Clear steps, dependencies, realistic sequence, and early deliverables." },
+    { type: "mcq", question: "A candidate gives a confident answer but provides no example, metric, artifact, or decision they personally owned. How should it be scored?", options: ["High, because confidence shows readiness", "Low until evidence is provided", "High if the answer uses current industry terms", "Ignore evidence if the resume looks strong"], correctOption: "B", competency: "Evidence discipline", complexity: "baseline", expectedSignals: "Scores substance over fluency or style." },
+    { question: "Use the handoff diagram below for a " + title + " task involving " + roleFocus + ". Where can quality break down, what control would you add, and how would you prove the control worked?", competency: "Process judgment", complexity: "advanced", expectedSignals: "Handoff risk, quality gate, ownership, measurement, and follow-up.", diagramMermaid: "flowchart LR\nA[Input or request] --> B[Role task]\nB --> C[Review or approval]\nC --> D[Business outcome]\nB --> E[Exception queue]\nE --> F[Owner follow-up]\nF --> C" },
+    { question: "Describe a time you found a systematic process error. What did you do after identifying it?", competency: "Operational ownership", complexity: "baseline", expectedSignals: "Root cause, stakeholder communication, durable fix, and measured improvement." },
+    { type: "mcq", question: "A production process is faster after a change, but the error rate doubles and the errors affect customers. What is the best next step?", options: ["Keep it because speed improved", "Pause or contain the change, quantify impact, fix root cause, and communicate risk", "Hide the errors until enough data arrives", "Ask only the fastest performer to handle the process"], correctOption: "B", competency: "Risk tradeoff", complexity: "stress", expectedSignals: "Prioritizes containment, measurement, root cause, and communication." },
+    { question: "Design a pass/fail rubric for one critical task in this JD. Include five criteria, severity levels, and at least two disqualifying defects.", competency: "Rubric design", complexity: "advanced", expectedSignals: "Objective criteria, thresholds, examples, and severe defect handling." },
+    { question: "The diagram shows a generic task pipeline. Identify the most fragile step, the first metric you would monitor, and the escalation path.", competency: "Quality controls", complexity: "advanced", expectedSignals: "Risk prioritization, metric selection, escalation, and ownership.", diagramMermaid: "flowchart TD\nA[Request received] --> B[Information gathered]\nB --> C[Work performed]\nC --> D[Quality check]\nD --> E{Pass?}\nE -- Yes --> F[Delivered]\nE -- No --> G[Rework and learnings]\nG --> C" },
+    { question: "Tell me about a situation where your first answer or approach was wrong. What evidence changed your mind?", competency: "Learning agility", complexity: "intermediate", expectedSignals: "Falsifying evidence, humility, correction, and prevention." },
+    { type: "mcq", question: "If a source record and a secondary summary disagree, what is the safest source-of-truth policy?", options: ["Trust the summary if it is newer", "Use the authoritative source record, document the mismatch, and escalate repeated disagreement", "Average both values", "Use whichever value helps the deadline"], correctOption: "B", competency: "Source discipline", complexity: "baseline", expectedSignals: "Uses authoritative records and escalation instead of convenience." },
+    { question: "You have a high-volume task due today. Explain your batching, sampling, review, and fatigue-control process.", competency: "High-volume execution", complexity: "advanced", expectedSignals: "Batching, sampling, calibration, checkpoints, and consistency controls." },
+    { question: "What should a manager or client never have to discover after you say a task is complete?", competency: "Ownership standards", complexity: "intermediate", expectedSignals: "Quality bar, transparency, known risks, and proactive communication." },
+    { question: "Your manager asks you to approve work you have not validated because a deadline is close. What exactly do you do?", competency: "Integrity under pressure", complexity: "stress", expectedSignals: "Risk framing, partial approval boundaries, escalation, and refusal when needed." },
+    { question: "Give a real example of a difficult stakeholder conversation you handled. What was the conflict, what did you say, and what changed?", competency: "Stakeholder communication", complexity: "intermediate", expectedSignals: "Specific context, clear communication, outcome, and lessons." },
+    { question: "How would you measure whether someone is successful in " + title + " after 30 days, considering " + roleFocus + " and " + marketFocus + "?", competency: "Success metrics", complexity: "intermediate", expectedSignals: "Role-relevant metrics, baseline, cadence, quality, and business impact." },
+    { type: "mcq", question: "A task includes personal, financial, client, or otherwise sensitive data. Which control matters most before sharing it with any third-party tool or external reviewer?", options: ["Use a shorter file name", "Minimize or mask sensitive data and follow access, retention, and approval rules", "Send it only after office hours", "Rely on the reviewer to delete it later"], correctOption: "B", competency: "Data governance", complexity: "baseline", expectedSignals: "Prioritizes minimization, access control, retention, and approvals." },
+    { question: "Explain how you would turn a vague JD requirement into testable acceptance criteria.", competency: "Requirement clarity", complexity: "intermediate", expectedSignals: "Clarifying questions, examples, edge cases, measurable acceptance criteria." },
+    { question: "A customer, internal user, or stakeholder says the delivered work is wrong. How do you investigate without becoming defensive?", competency: "Issue handling", complexity: "stress", expectedSignals: "Evidence review, humility, correction path, prevention, and communication." },
+    { question: "Use the decision diagram below. Where should human review be mandatory for work touching " + roleFocus + ", and what evidence is required before moving forward?", competency: "Judgment gates", complexity: "advanced", expectedSignals: "Risk thresholds, evidence requirements, escalation criteria, and documentation.", diagramMermaid: "flowchart TD\nA[Work item] --> B{Low risk?}\nB -- Yes --> C[Proceed with checklist]\nB -- No --> D[Human review]\nD --> E{Evidence sufficient?}\nE -- Yes --> F[Approve]\nE -- No --> G[Escalate or stop]" },
+    { question: "What are three edge cases for this role based on " + roleFocus + " and " + marketFocus + ", and how would you test or prepare for each?", competency: "Edge-case coverage", complexity: "advanced", expectedSignals: "Role-specific edge cases, expected outcomes, and prevention." },
+    { question: "Describe how you keep work traceable: inputs used, assumptions made, changes requested, approvals, and final handoff.", competency: "Documentation discipline", complexity: "intermediate", expectedSignals: "Traceability, audit trail, assumptions, versioning, and ownership." },
+    { type: "mcq", question: "A metric improves, but the improvement may be caused by a change in input mix rather than better performance. What should you do?", options: ["Claim the win immediately", "Compare like-for-like cohorts and check confounders before concluding", "Stop tracking the metric", "Use only the best-performing examples"], correctOption: "B", competency: "Analytical judgment", complexity: "advanced", expectedSignals: "Understands baseline, cohorts, and confounders." },
+    { question: "Take one tool or method from your resume and explain a mistake people commonly make with it.", competency: "Tool maturity", complexity: "intermediate", expectedSignals: "Practical experience, limitations, failure modes, and prevention." },
+    { question: "The diagram shows a feedback loop. Explain how you would categorize recurring failures so leaders can prioritize fixes instead of reading anecdotes.", competency: "Issue taxonomy", complexity: "advanced", expectedSignals: "Severity, frequency, reproducibility, impact, owners, and examples.", diagramMermaid: "flowchart LR\nA[Work output] --> B[Review]\nB --> C{Failure type}\nC --> D[Accuracy]\nC --> E[Timeliness]\nC --> F[Policy or risk]\nC --> G[Communication]\nD --> H[Prioritized fixes]\nE --> H\nF --> H\nG --> H" },
+    { question: "What would make you disqualify otherwise polished work in this role?", competency: "Disqualifying defects", complexity: "intermediate", expectedSignals: "Role-critical errors, integrity issues, missing evidence, risk, and impact." },
+    { question: "How would you handle ambiguity when the JD, stakeholder request, and available data point in different directions?", competency: "Ambiguity handling", complexity: "stress", expectedSignals: "Clarification, tradeoff framing, assumptions, decision log, and escalation." },
+    { question: "Give your first-week plan for " + title + ", tying " + resumeFocus + " to " + roleFocus + ". Include what you would learn, produce, flag as risk, and use as evidence of progress.", competency: "Readiness and judgment", complexity: "advanced", expectedSignals: "Structured onboarding, practical outputs, risk awareness, and measurable progress." },
+    { type: "mcq", question: "For a hard same-day hiring decision, which signal should carry the most weight?", options: ["Long fluent answers", "Evidence-backed examples matched to the JD, with tradeoffs and failure handling", "Fast answers", "Use of popular buzzwords"], correctOption: "B", competency: "Screening judgment", complexity: "stress", expectedSignals: "Values evidence density and role-critical judgment over style." }
   ];
 }
 
@@ -1800,7 +1886,7 @@ function fallbackEvaluation(job, state) {
   const answered = state.answers.filter(function(a) {
     return (a.answer || "").trim().length > 20;
   }).length;
-  const hits = ["audit", "rubric", "crm", "prompt", "privacy", "finance", "validation", "compliance", "spreadsheet", "metrics"].filter(function(term) {
+  const hits = ["metric", "process", "quality", "customer", "stakeholder", "risk", "compliance", "data", "analysis", "evidence", "documentation", "tradeoff", "root cause", "priority", "validation"].filter(function(term) {
     return combined.indexOf(term) !== -1;
   }).length;
   const score = Math.max(35, Math.min(78, answered * 7 + hits * 3 + Math.floor(combined.split(/\s+/).length / 35)));
@@ -1811,7 +1897,7 @@ function fallbackEvaluation(job, state) {
     good: keywordHitsDescription(hits),
     bad: ["AI scoring model was unavailable; a human reviewer must validate the answer quality before advancing."],
     fitCriteria: [
-      { criterion: "Role-specific AI workflow evidence", met: hits >= 4, evidence: "Keyword and answer-completion based fallback estimate." },
+      { criterion: "Role-specific evidence", met: hits >= 4, evidence: "Keyword and answer-completion based fallback estimate." },
       { criterion: "Detailed answer depth", met: answered >= settings.minQuestions, evidence: answered + " substantive answers captured." },
       { criterion: "Ready for same-day offer", met: false, evidence: "Fallback scoring cannot authorize an offer." }
     ],
@@ -1823,8 +1909,8 @@ function fallbackEvaluation(job, state) {
 }
 
 function keywordHitsDescription(hits) {
-  if (hits >= 6) return ["Candidate referenced several relevant AI workflow concepts."];
-  if (hits >= 3) return ["Candidate referenced some relevant AI workflow concepts, but depth is unverified."];
+  if (hits >= 6) return ["Candidate referenced several relevant role, quality, risk, and evidence concepts."];
+  if (hits >= 3) return ["Candidate referenced some relevant role and quality concepts, but depth is unverified."];
   return ["Candidate completed the interview, but fallback scoring found limited role-specific signal."];
 }
 

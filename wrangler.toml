@@ -8,9 +8,10 @@ APP_NAME = "AI Interview Workflows"
 APP_URL = "https://ai-interview-workflows.wsipl.workers.dev"
 ADMIN_USER = "admin"
 OPENAI_MODEL = "gpt-5.6-luna"
+OPENAI_REASONING_EFFORT = "none"
 OPENROUTER_MODEL = "openai/gpt-4o-mini"
 GOOGLE_SHEET_ID = "1aW0_18-qqExMoqwJw11kVoNe5ajsXmkaHULrQcC1VQo"
-DEFAULT_MARKET_CONTEXT = "AI workflow analyst screening should emphasize LLM output evaluation, prompt testing, CRM and pre-sales workflow QA, customer success automation review, finance data validation, spreadsheet discipline, privacy awareness, and clear issue documentation for engineering teams."
+DEFAULT_MARKET_CONTEXT = "Screen candidates against the pasted JD and resume using role-relevant skills, practical scenarios, evidence-based answers, communication quality, risk judgment, and current market expectations for the role."
 
 [[kv_namespaces]]
 binding = "AI_INTERVIEW_KV"
