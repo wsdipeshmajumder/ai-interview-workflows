@@ -167,6 +167,14 @@ async function route(request, env) {
     if (!admin) return redirect("/admin/login");
     return updateJobSettingsAction(request, env, path.split("/")[3]);
   }
+  if (path.startsWith("/admin/jobs/") && path.endsWith("/edit") && method === "GET") {
+    if (!admin) return redirect("/admin/login");
+    return adminJobEditPage(env, admin, path.split("/")[3]);
+  }
+  if (path.startsWith("/admin/jobs/") && path.endsWith("/submissions") && method === "GET") {
+    if (!admin) return redirect("/admin/login");
+    return adminJobSubmissionsPage(env, admin, path.split("/")[3]);
+  }
   if (path.startsWith("/admin/jobs/") && path.indexOf("/applications/") !== -1 && method === "GET") {
     if (!admin) return redirect("/admin/login");
     const parts = path.split("/");
@@ -253,7 +261,10 @@ async function preInterviewByCandidateUrl(request, env) {
     return html(layout(env, job.title, jobDetailView(job, duplicateAttemptMessage(pending.candidate))), 409);
   }
   const token = await createSignedToken(env, pending);
-  return html(layout(env, "Before interview", preInterviewView(job, pending, token)));
+  if (clean(url.searchParams.get("step")) === "begin") {
+    return html(layout(env, "Begin test", beginTestView(job, pending, token)));
+  }
+  return html(layout(env, "Instructions", preInterviewInstructionsView(job, pending)));
 }
 
 async function launchInterview(request, env) {
@@ -380,8 +391,20 @@ async function adminHomePage(env, admin) {
 async function adminJobPage(env, admin, jobId) {
   const job = await getJob(env, jobId);
   if (!job) return html(layout(env, "Not found", errorView("Job not found."), { admin: admin }), 404);
+  return redirect("/admin/jobs/" + encodeURIComponent(job.id) + "/submissions");
+}
+
+async function adminJobEditPage(env, admin, jobId) {
+  const job = await getJob(env, jobId);
+  if (!job) return html(layout(env, "Not found", errorView("Job not found."), { admin: admin }), 404);
+  return html(layout(env, "Edit JD", adminJobEditView(job), { admin: admin }));
+}
+
+async function adminJobSubmissionsPage(env, admin, jobId) {
+  const job = await getJob(env, jobId);
+  if (!job) return html(layout(env, "Not found", errorView("Job not found."), { admin: admin }), 404);
   const applications = await readApplications(env, job);
-  return html(layout(env, job.title, adminJobView(job, applications), { admin: admin }));
+  return html(layout(env, "Submissions", adminJobSubmissionsView(job, applications), { admin: admin }));
 }
 
 async function adminApplicationPage(env, admin, jobId, applicationId) {
@@ -417,13 +440,13 @@ async function createJobAction(request, env, admin) {
     return html(newJobPage(env, admin, input, "Title and JD are required."), 400);
   }
   const job = await createJob(env, input);
-  return redirect("/admin/jobs/" + encodeURIComponent(job.id));
+  return redirect("/admin/jobs/" + encodeURIComponent(job.id) + "/edit");
 }
 
 async function updateJobStatusAction(request, env, jobId) {
   const form = await request.formData();
   await updateJobStatus(env, jobId, clean(form.get("status")) || "active");
-  return redirect("/admin/jobs/" + encodeURIComponent(jobId));
+  return redirect("/admin/jobs/" + encodeURIComponent(jobId) + "/edit");
 }
 
 async function updateJobSettingsAction(request, env, jobId) {
@@ -439,9 +462,9 @@ async function updateJobSettingsAction(request, env, jobId) {
     candidateRules: rulesFromForm(form)
   };
   if (input.maxQuestions < input.minQuestions) input.maxQuestions = input.minQuestions;
-  if (!input.jd) return redirect("/admin/jobs/" + encodeURIComponent(jobId));
+  if (!input.jd) return redirect("/admin/jobs/" + encodeURIComponent(jobId) + "/edit");
   await updateJobSettings(env, jobId, input);
-  return redirect("/admin/jobs/" + encodeURIComponent(jobId));
+  return redirect("/admin/jobs/" + encodeURIComponent(jobId) + "/edit");
 }
 
 function layout(env, title, body, options) {
@@ -526,22 +549,21 @@ function jobDetailView(job, message) {
   ].join("");
 }
 
-function preInterviewView(job, pending, token) {
+function preInterviewInstructionsView(job, pending) {
   const settings = interviewSettings(job, pending);
-  const resumeWords = normalizeText(pending.resumeText || "", 14000).split(/\s+/).filter(Boolean).length;
   const topics = interviewTopics(job).map(function(topic) {
     return "<span class=\"topic-chip\">" + escapeHtml(topic) + "</span>";
   }).join("");
+  const beginHref = "/start/wsipl?candidate=" + encodeURIComponent(pending.candidateId || pending.id || "") + "&step=begin&ping=ok";
   return [
     "<section class=\"preflight\">",
     "<div>",
     "<div class=\"logo-strip\">" + logoMarkup("surface-logo") + "</div>",
-    "<p class=\"eyebrow\">Before you begin</p>",
+    "<p class=\"eyebrow\">Instructions</p>",
     "<h1>" + escapeHtml(job.title) + "</h1>",
     "<p class=\"candidate-id\">Candidate ID: <strong>" + escapeHtml(pending.candidateId || pending.id || "") + "</strong></p>",
-    "<p class=\"lead\">This interview will take at least " + escapeHtml(settings.minMinutes) + " minutes. Each question is paced, and you can answer by typing. Keep this tab open and do not refresh during the interview.</p>",
+    "<p class=\"lead\">Read this page carefully before moving to the tool check. The timed interview starts only after the next page passes checks and you click Begin.</p>",
     "</div>",
-    "<div class=\"preflight-grid\">",
     "<section class=\"panel\">",
     "<h2>What to expect</h2>",
     "<ul class=\"clean-list\">",
@@ -554,6 +576,35 @@ function preInterviewView(job, pending, token) {
     "</ul>",
     renderCandidateRules(job),
     "<div class=\"topic-box\"><strong>You will be interviewed on these topics</strong><div class=\"topic-list\">" + topics + "</div></div>",
+    "</section>",
+    "<div class=\"split-actions\"><a class=\"button secondary\" href=\"/jobs\">Back to openings</a><a class=\"button\" href=\"" + escapeHtml(beginHref) + "\">Continue to tool check</a></div>",
+    "</section>"
+  ].join("");
+}
+
+function beginTestView(job, pending, token) {
+  const settings = interviewSettings(job, pending);
+  const resumeWords = normalizeText(pending.resumeText || "", 14000).split(/\s+/).filter(Boolean).length;
+  const instructionsHref = "/start/wsipl?candidate=" + encodeURIComponent(pending.candidateId || pending.id || "") + "&ping=ok";
+  return [
+    "<section class=\"preflight\">",
+    "<div>",
+    "<div class=\"logo-strip\">" + logoMarkup("surface-logo") + "</div>",
+    "<p class=\"eyebrow\">Begin test</p>",
+    "<h1>" + escapeHtml(job.title) + "</h1>",
+    "<p class=\"candidate-id\">Candidate ID: <strong>" + escapeHtml(pending.candidateId || pending.id || "") + "</strong></p>",
+    "<p class=\"lead\">This page checks your browser, resume capture, and connection. The timer starts only after checks pass and you click Begin timed interview.</p>",
+    "</div>",
+    "<div class=\"preflight-grid\">",
+    "<section class=\"panel\">",
+    "<h2>Before launch</h2>",
+    "<ul class=\"clean-list\">",
+    "<li>Keep this tab open for the full " + escapeHtml(settings.minMinutes) + "+ minute interview.</li>",
+    "<li>Do not refresh once the timed interview begins.</li>",
+    "<li>Answer in your own words with evidence, metrics, and tradeoffs.</li>",
+    "<li>Use only what was allowed on the previous instructions page.</li>",
+    "</ul>",
+    "<div class=\"topic-box\"><strong>Need to review?</strong><p class=\"hint\">Go back to the instructions page before starting. Once you begin, continue forward.</p><a class=\"button secondary\" href=\"" + escapeHtml(instructionsHref) + "\">Review instructions</a></div>",
     "</section>",
     "<section class=\"panel\">",
     "<h2>Tool check</h2>",
@@ -787,7 +838,7 @@ function adminHomeView(jobs, counts, mode) {
     const settings = interviewSettings(job);
     return [
       "<tr>",
-      "<td><a href=\"/admin/jobs/" + encodeURIComponent(job.id) + "\">" + escapeHtml(job.title) + "</a></td>",
+      "<td><a href=\"/admin/jobs/" + encodeURIComponent(job.id) + "/submissions\">" + escapeHtml(job.title) + "</a></td>",
       "<td><span class=\"pill\">" + escapeHtml(job.status) + "</span></td>",
       "<td>" + escapeHtml(job.positions) + "</td>",
       "<td>" + escapeHtml(settings.minMinutes) + " min / " + escapeHtml(questionRangeText(settings)) + "</td>",
@@ -795,7 +846,7 @@ function adminHomeView(jobs, counts, mode) {
       "<td>" + escapeHtml(settings.allowRetakes ? "Allowed" : "Blocked") + "</td>",
       "<td>" + escapeHtml(counts[job.id] || 0) + "</td>",
       "<td>" + escapeHtml(job.sheetTitle || "-") + "</td>",
-      "<td><div class=\"action-row\"><a class=\"button secondary compact\" href=\"/admin/jobs/" + encodeURIComponent(job.id) + "#edit-jd\">Edit JD</a><a class=\"button compact\" href=\"/admin/jobs/" + encodeURIComponent(job.id) + "#submissions\">View submissions</a></div></td>",
+      "<td><div class=\"action-row\"><a class=\"button secondary compact\" href=\"/admin/jobs/" + encodeURIComponent(job.id) + "/edit\">Edit JD</a><a class=\"button compact\" href=\"/admin/jobs/" + encodeURIComponent(job.id) + "/submissions\">View submissions</a></div></td>",
       "</tr>"
     ].join("");
   }).join("");
@@ -840,7 +891,38 @@ function newJobPage(env, admin, defaults, message) {
   ].join(""), { admin: admin });
 }
 
-function adminJobView(job, applications) {
+function adminJobEditView(job) {
+  const settings = interviewSettings(job);
+  return [
+    "<section class=\"page-head row\">",
+    "<div><p class=\"eyebrow\">" + escapeHtml(job.status) + "</p><h1>Edit JD</h1><p>" + escapeHtml(job.title) + " · " + escapeHtml(job.sheetTitle || "") + " · " + escapeHtml(settings.minMinutes) + " min · " + escapeHtml(questionRangeText(settings)) + " · pass " + escapeHtml(settings.passingScore) + "+</p></div>",
+    "<div class=\"admin-actions\"><a class=\"button secondary\" href=\"/admin\">Back to jobs</a><a class=\"button\" href=\"/admin/jobs/" + encodeURIComponent(job.id) + "/submissions\">View submissions</a></div>",
+    "</section>",
+    "<section class=\"panel\"><h2>Opening status</h2>",
+    "<form method=\"post\" action=\"/admin/jobs/" + encodeURIComponent(job.id) + "/status\" class=\"status-form\">",
+    "<select name=\"status\"><option value=\"active\"" + (job.status === "active" ? " selected" : "") + ">active</option><option value=\"closed\"" + (job.status === "closed" ? " selected" : "") + ">closed</option></select>",
+    "<button class=\"button secondary\" type=\"submit\">Update status</button>",
+    "</form>",
+    "</section>",
+    "<section class=\"panel section-gap\"><h2>JD and interview controls</h2>",
+    "<form method=\"post\" action=\"/admin/jobs/" + encodeURIComponent(job.id) + "/settings\" class=\"form\">",
+    "<div class=\"grid-2\">",
+    "<label>Minimum minutes<input name=\"estimatedMinutes\" type=\"number\" min=\"30\" max=\"120\" value=\"" + escapeHtml(settings.minMinutes) + "\"></label>",
+    "<label>Minimum questions<input name=\"minQuestions\" type=\"number\" min=\"1\" max=\"80\" value=\"" + escapeHtml(settings.minQuestions) + "\"></label>",
+    "<label>Maximum questions<input name=\"maxQuestions\" type=\"number\" min=\"1\" max=\"100\" value=\"" + escapeHtml(settings.maxQuestions) + "\"></label>",
+    "<label>Passing score<input name=\"passingScore\" type=\"number\" min=\"50\" max=\"100\" value=\"" + escapeHtml(settings.passingScore) + "\"></label>",
+    "<label class=\"check\"><input name=\"allowRetakes\" type=\"checkbox\" value=\"1\"" + (settings.allowRetakes ? " checked" : "") + "> Allow repeat attempts for this opening</label>",
+    "</div>",
+    "<label>Job description<textarea name=\"jd\" rows=\"10\" required>" + escapeHtml(job.jd || "") + "</textarea></label>",
+    "<label>Market trends and interviewer guidance<textarea name=\"marketContext\" rows=\"4\">" + escapeHtml(job.marketContext || "") + "</textarea></label>",
+    candidateRulesControls(job),
+    "<button class=\"button\" type=\"submit\">Save JD and controls</button>",
+    "</form>",
+    "</section>"
+  ].join("");
+}
+
+function adminJobSubmissionsView(job, applications) {
   const settings = interviewSettings(job);
   const sortedApplications = applications.slice().sort(function(a, b) {
     return String(b.submittedAt || "").localeCompare(String(a.submittedAt || ""));
@@ -880,29 +962,10 @@ function adminJobView(job, applications) {
   }).join("");
   return [
     "<section class=\"page-head row\">",
-    "<div><p class=\"eyebrow\">" + escapeHtml(job.status) + "</p><h1>" + escapeHtml(job.title) + "</h1><p>" + escapeHtml(job.sheetTitle || "") + " · " + escapeHtml(settings.minMinutes) + " min · " + escapeHtml(questionRangeText(settings)) + " · pass " + escapeHtml(settings.passingScore) + "+ · retakes " + escapeHtml(settings.allowRetakes ? "allowed" : "blocked") + "</p></div>",
-    "<div class=\"admin-actions\"><a class=\"button secondary\" href=\"#edit-jd\">Edit JD</a><a class=\"button\" href=\"#submissions\">View submissions</a></div>",
-    "<form method=\"post\" action=\"/admin/jobs/" + encodeURIComponent(job.id) + "/status\" class=\"status-form\">",
-    "<select name=\"status\"><option value=\"active\"" + (job.status === "active" ? " selected" : "") + ">active</option><option value=\"closed\"" + (job.status === "closed" ? " selected" : "") + ">closed</option></select>",
-    "<button class=\"button secondary\" type=\"submit\">Update</button>",
-    "</form>",
+    "<div><p class=\"eyebrow\">" + escapeHtml(job.status) + "</p><h1>Submissions</h1><p>" + escapeHtml(job.title) + " · " + escapeHtml(job.sheetTitle || "") + " · " + escapeHtml(settings.minMinutes) + " min · " + escapeHtml(questionRangeText(settings)) + " · pass " + escapeHtml(settings.passingScore) + "+ · retakes " + escapeHtml(settings.allowRetakes ? "allowed" : "blocked") + "</p></div>",
+    "<div class=\"admin-actions\"><a class=\"button secondary\" href=\"/admin\">Back to jobs</a><a class=\"button\" href=\"/admin/jobs/" + encodeURIComponent(job.id) + "/edit\">Edit JD</a></div>",
     "</section>",
-    "<section id=\"edit-jd\" class=\"panel\"><h2>Edit JD and interview controls</h2>",
-    "<form method=\"post\" action=\"/admin/jobs/" + encodeURIComponent(job.id) + "/settings\" class=\"form\">",
-    "<div class=\"grid-2\">",
-    "<label>Minimum minutes<input name=\"estimatedMinutes\" type=\"number\" min=\"30\" max=\"120\" value=\"" + escapeHtml(settings.minMinutes) + "\"></label>",
-    "<label>Minimum questions<input name=\"minQuestions\" type=\"number\" min=\"1\" max=\"80\" value=\"" + escapeHtml(settings.minQuestions) + "\"></label>",
-    "<label>Maximum questions<input name=\"maxQuestions\" type=\"number\" min=\"1\" max=\"100\" value=\"" + escapeHtml(settings.maxQuestions) + "\"></label>",
-    "<label>Passing score<input name=\"passingScore\" type=\"number\" min=\"50\" max=\"100\" value=\"" + escapeHtml(settings.passingScore) + "\"></label>",
-    "<label class=\"check\"><input name=\"allowRetakes\" type=\"checkbox\" value=\"1\"" + (settings.allowRetakes ? " checked" : "") + "> Allow repeat attempts for this opening</label>",
-    "</div>",
-    "<label>Job description<textarea name=\"jd\" rows=\"10\" required>" + escapeHtml(job.jd || "") + "</textarea></label>",
-    "<label>Market trends and interviewer guidance<textarea name=\"marketContext\" rows=\"4\">" + escapeHtml(job.marketContext || "") + "</textarea></label>",
-    candidateRulesControls(job),
-    "<button class=\"button\" type=\"submit\">Save interview controls</button>",
-    "</form>",
-    "</section>",
-    "<section id=\"submissions\" class=\"section-gap\"><div class=\"row\"><div><h2>Submissions</h2><p class=\"hint\">Recent submissions are shown first. Use search and filters to narrow the list.</p></div><strong id=\"submissionCount\" class=\"pill\">" + escapeHtml(sortedApplications.length) + " shown</strong></div>",
+    "<section id=\"submissions\"><div class=\"row\"><div><h2>Candidate listing</h2><p class=\"hint\">Recent submissions are shown first. Use search and filters to narrow the list.</p></div><strong id=\"submissionCount\" class=\"pill\">" + escapeHtml(sortedApplications.length) + " shown</strong></div>",
     "<div class=\"filter-bar\">",
     "<label>Search<input id=\"submissionSearch\" type=\"search\" placeholder=\"Name, email, phone, candidate ID, summary, fit signal\"></label>",
     "<label>Recommendation<select id=\"recommendationFilter\"><option value=\"\">All recommendations</option><option value=\"Strong Hire\">Strong Hire</option><option value=\"Hire\">Hire</option><option value=\"Maybe\">Maybe</option><option value=\"No Hire\">No Hire</option></select></label>",
@@ -954,7 +1017,7 @@ function adminApplicationView(job, application) {
   return [
     "<section class=\"page-head row\">",
     "<div><p class=\"eyebrow\">Candidate report</p><h1>" + escapeHtml(application.candidate.name || "Candidate") + "</h1><p>" + escapeHtml(job.title) + " · " + escapeHtml(application.submittedAt || "") + "</p></div>",
-    "<a class=\"button secondary\" href=\"/admin/jobs/" + encodeURIComponent(job.id) + "\">Back to job</a>",
+    "<a class=\"button secondary\" href=\"/admin/jobs/" + encodeURIComponent(job.id) + "/submissions\">Back to submissions</a>",
     "</section>",
     "<section class=\"report-grid\">",
     "<article class=\"metric-card\"><span>AI score</span><strong>" + escapeHtml(ev.score || 0) + "</strong><p>" + escapeHtml(ev.recommendation || "") + "</p></article>",
@@ -2391,9 +2454,9 @@ function css() {
     ".clean-list{margin:0;padding-left:18px;color:#344054;line-height:1.65}.topic-box{margin-top:22px;padding:16px;border:1px solid #c8d1ff;border-radius:8px;background:#f4f6ff}.topic-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.topic-chip{display:inline-flex;align-items:center;min-height:34px;padding:6px 10px;border:1px solid #aab8ff;border-radius:6px;background:#eef1ff;color:#1d2939;font-weight:700}.diagram-panel{margin:18px 0;padding:14px;border:1px solid #c8d1ff;border-radius:8px;background:#f7f8ff}.diagram-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px;color:#475467;font-size:12px;font-weight:800;text-transform:uppercase}.mermaid{margin:0;overflow:auto;text-align:center;background:white;border:1px solid #e1e7f5;border-radius:6px;padding:12px}.checks{display:grid;gap:10px;margin:14px 0}.check-row{margin:0;padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc;color:#475467}.check-row.ok{border-color:#9dd4c9;background:#eefaf7;color:#115e59}.check-row.bad{border-color:#f6c7a7;background:#fff4ed;color:#93370d}.hidden{display:none}.next-card{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;text-align:left}.next-card p{margin:6px 0 0}",
     ".rules-panel{margin-top:22px}.rules-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;color:#475467;font-size:12px;font-weight:800;text-transform:uppercase}.rules-head strong{color:var(--brand)}.rules-grid,.rules-admin-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.rule-card{padding:16px;border-radius:8px;border:1px solid var(--line)}.rule-card h3{margin:0 0 10px;font-size:18px}.rule-card ul{margin:0;padding-left:18px;line-height:1.55}.rule-card.allowed{border-color:#9dd4c9;background:#eefaf7}.rule-card.blocked{border-color:#f6c7a7;background:#fff4ed}.rule-card.allowed h3{color:#115e59}.rule-card.blocked h3{color:#93370d}.rules-admin{display:grid;gap:14px;padding:18px;border:1px solid #c8d1ff;border-radius:8px;background:#f7f8ff}.rules-admin h3{margin:0;font-size:20px}.rule-fieldset{display:grid;gap:12px;margin:0;padding:16px;border:1px solid #d8def8;border-radius:8px;background:white}.rule-fieldset legend{padding:0 6px;color:#344054;font-weight:800}.rule-check{align-items:flex-start;min-height:auto;padding:8px 0}",
     ".table-wrap{overflow-x:auto;background:white;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:13px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc;color:#475467;font-size:12px;text-transform:uppercase;letter-spacing:0}tr:last-child td{border-bottom:0}",
-    ".status-form,.action-row,.admin-actions{display:flex;gap:10px;align-items:center}.action-row{flex-wrap:wrap}.admin-actions{flex-wrap:wrap;justify-content:flex-end}.filter-bar{display:grid;grid-template-columns:minmax(240px,1.4fr) minmax(180px,1fr) minmax(170px,1fr) minmax(130px,.6fr) auto;gap:12px;align-items:end;margin:16px 0}.empty{padding:46px 0;text-align:center}.complete{max-width:680px;margin:8vh auto 0;text-align:center}.section-gap{margin-top:24px}.pill{display:inline-flex;padding:3px 8px;border-radius:999px;background:#eef6f5;color:#115e59;font-weight:800;font-size:12px}.risk-high{background:#fef3f2;color:#b42318}.risk-medium{background:#fff4ed;color:#c4320a}.risk-low{background:#fffaeb;color:#b54708}.risk-clear{background:#eef6f5;color:#115e59}",
+    ".status-form,.action-row,.admin-actions,.split-actions{display:flex;gap:10px;align-items:center}.action-row,.split-actions{flex-wrap:wrap}.split-actions{justify-content:flex-end;margin-top:18px}.admin-actions{flex-wrap:wrap;justify-content:flex-end}.filter-bar{display:grid;grid-template-columns:minmax(240px,1.4fr) minmax(180px,1fr) minmax(170px,1fr) minmax(130px,.6fr) auto;gap:12px;align-items:end;margin:16px 0}.empty{padding:46px 0;text-align:center}.complete{max-width:680px;margin:8vh auto 0;text-align:center}.section-gap{margin-top:24px}.pill{display:inline-flex;padding:3px 8px;border-radius:999px;background:#eef6f5;color:#115e59;font-weight:800;font-size:12px}.risk-high{background:#fef3f2;color:#b42318}.risk-medium{background:#fff4ed;color:#c4320a}.risk-low{background:#fffaeb;color:#b54708}.risk-clear{background:#eef6f5;color:#115e59}",
     ".report-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.metric-card{padding:18px;border:1px solid var(--line);border-radius:8px;background:white;box-shadow:0 8px 24px rgba(17,24,39,.05)}.metric-card span{display:block;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase}.metric-card strong{display:block;margin:8px 0;font-size:36px;line-height:1}.metric-card .small-id{font-size:15px;line-height:1.3;word-break:break-all}.answer-stack{display:grid;gap:16px}.answer-card{padding:20px;border:1px solid var(--line);border-radius:8px;background:white}.answer-card h3{margin:10px 0 10px;font-size:22px;line-height:1.25}.answer-head{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--accent);font-size:12px;font-weight:800;text-transform:uppercase}.answer-text{margin-top:12px;padding:14px;border:1px solid #e4e9f2;border-radius:6px;background:#f8fafc;color:#344054;line-height:1.55}.answer-text p{margin:0 0 10px}.option-list{margin:12px 0;padding-left:24px;color:#344054}.event-list{display:grid;gap:10px}.event-list div{padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc}.event-list strong{display:block;text-transform:capitalize}.event-list span{display:block;color:var(--muted);font-size:12px}.event-list p{margin:6px 0 0;color:#344054}",
     "@media(max-width:900px){.interview{grid-template-columns:1fr}.interview-side{position:static;grid-template-columns:1fr 1fr}.side-card:last-child{grid-column:1/-1}.filter-bar{grid-template-columns:1fr 1fr}}",
-    "@media(max-width:760px){.topbar,.row,.job-card,.status-form,.admin-actions{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid,.interview-side,.report-grid,.rules-grid,.rules-admin-grid,.filter-bar{grid-template-columns:1fr}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{font-size:32px}.question-title{font-size:30px}.question-kicker{display:grid}.timer-grid{grid-template-columns:1fr}}"
+    "@media(max-width:760px){.topbar,.row,.job-card,.status-form,.admin-actions,.split-actions{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid,.interview-side,.report-grid,.rules-grid,.rules-admin-grid,.filter-bar{grid-template-columns:1fr}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{font-size:32px}.question-title{font-size:30px}.question-kicker{display:grid}.timer-grid{grid-template-columns:1fr}}"
   ].join("");
 }
