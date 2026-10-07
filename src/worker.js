@@ -795,6 +795,7 @@ function adminHomeView(jobs, counts, mode) {
       "<td>" + escapeHtml(settings.allowRetakes ? "Allowed" : "Blocked") + "</td>",
       "<td>" + escapeHtml(counts[job.id] || 0) + "</td>",
       "<td>" + escapeHtml(job.sheetTitle || "-") + "</td>",
+      "<td><div class=\"action-row\"><a class=\"button secondary compact\" href=\"/admin/jobs/" + encodeURIComponent(job.id) + "#edit-jd\">Edit JD</a><a class=\"button compact\" href=\"/admin/jobs/" + encodeURIComponent(job.id) + "#submissions\">View submissions</a></div></td>",
       "</tr>"
     ].join("");
   }).join("");
@@ -806,8 +807,8 @@ function adminHomeView(jobs, counts, mode) {
     "<a class=\"button\" href=\"/admin/jobs/new\">Add new JD</a>",
     "</section>",
     "<div class=\"table-wrap\"><table>",
-    "<thead><tr><th>Job</th><th>Status</th><th>Positions</th><th>Pacing</th><th>Pass</th><th>Retakes</th><th>Candidates</th><th>Sheet tab</th></tr></thead>",
-    "<tbody>" + (rows || "<tr><td colspan=\"8\">No jobs yet.</td></tr>") + "</tbody>",
+    "<thead><tr><th>Job</th><th>Status</th><th>Positions</th><th>Pacing</th><th>Pass</th><th>Retakes</th><th>Candidates</th><th>Sheet tab</th><th>Actions</th></tr></thead>",
+    "<tbody>" + (rows || "<tr><td colspan=\"9\">No jobs yet.</td></tr>") + "</tbody>",
     "</table></div>"
   ].join("");
 }
@@ -841,10 +842,27 @@ function newJobPage(env, admin, defaults, message) {
 
 function adminJobView(job, applications) {
   const settings = interviewSettings(job);
-  const rows = applications.map(function(application) {
+  const sortedApplications = applications.slice().sort(function(a, b) {
+    return String(b.submittedAt || "").localeCompare(String(a.submittedAt || ""));
+  });
+  const rows = sortedApplications.map(function(application) {
     const ev = application.evaluation || {};
+    const searchText = [
+      application.candidate.name,
+      application.candidate.email,
+      application.candidate.phone,
+      application.candidateId,
+      application.submittedAt,
+      ev.score,
+      ev.recommendation,
+      application.integrityRisk,
+      ev.summary,
+      compactList(ev.good || ev.strengths),
+      compactList(ev.bad || ev.risks),
+      compactFitCriteria(ev.fitCriteria)
+    ].join(" ");
     return [
-      "<tr>",
+      "<tr data-submission-row=\"1\" data-search=\"" + escapeHtml(searchText.toLowerCase()) + "\" data-recommendation=\"" + escapeHtml(ev.recommendation || "") + "\" data-integrity=\"" + escapeHtml(application.integrityRisk || "Clear") + "\" data-score=\"" + escapeHtml(ev.score || 0) + "\">",
       "<td><a href=\"/admin/jobs/" + encodeURIComponent(job.id) + "/applications/" + encodeURIComponent(application.id) + "\">" + escapeHtml(application.candidate.name || "") + "</a></td>",
       "<td>" + escapeHtml(application.candidate.email || "") + "</td>",
       "<td>" + escapeHtml(application.candidate.phone || "") + "</td>",
@@ -863,12 +881,13 @@ function adminJobView(job, applications) {
   return [
     "<section class=\"page-head row\">",
     "<div><p class=\"eyebrow\">" + escapeHtml(job.status) + "</p><h1>" + escapeHtml(job.title) + "</h1><p>" + escapeHtml(job.sheetTitle || "") + " · " + escapeHtml(settings.minMinutes) + " min · " + escapeHtml(questionRangeText(settings)) + " · pass " + escapeHtml(settings.passingScore) + "+ · retakes " + escapeHtml(settings.allowRetakes ? "allowed" : "blocked") + "</p></div>",
+    "<div class=\"admin-actions\"><a class=\"button secondary\" href=\"#edit-jd\">Edit JD</a><a class=\"button\" href=\"#submissions\">View submissions</a></div>",
     "<form method=\"post\" action=\"/admin/jobs/" + encodeURIComponent(job.id) + "/status\" class=\"status-form\">",
     "<select name=\"status\"><option value=\"active\"" + (job.status === "active" ? " selected" : "") + ">active</option><option value=\"closed\"" + (job.status === "closed" ? " selected" : "") + ">closed</option></select>",
     "<button class=\"button secondary\" type=\"submit\">Update</button>",
     "</form>",
     "</section>",
-    "<section class=\"panel\"><h2>Interview controls</h2>",
+    "<section id=\"edit-jd\" class=\"panel\"><h2>Edit JD and interview controls</h2>",
     "<form method=\"post\" action=\"/admin/jobs/" + encodeURIComponent(job.id) + "/settings\" class=\"form\">",
     "<div class=\"grid-2\">",
     "<label>Minimum minutes<input name=\"estimatedMinutes\" type=\"number\" min=\"30\" max=\"120\" value=\"" + escapeHtml(settings.minMinutes) + "\"></label>",
@@ -883,10 +902,40 @@ function adminJobView(job, applications) {
     "<button class=\"button\" type=\"submit\">Save interview controls</button>",
     "</form>",
     "</section>",
-    "<section class=\"section-gap\"><h2>Candidates</h2><div class=\"table-wrap\"><table>",
+    "<section id=\"submissions\" class=\"section-gap\"><div class=\"row\"><div><h2>Submissions</h2><p class=\"hint\">Recent submissions are shown first. Use search and filters to narrow the list.</p></div><strong id=\"submissionCount\" class=\"pill\">" + escapeHtml(sortedApplications.length) + " shown</strong></div>",
+    "<div class=\"filter-bar\">",
+    "<label>Search<input id=\"submissionSearch\" type=\"search\" placeholder=\"Name, email, phone, candidate ID, summary, fit signal\"></label>",
+    "<label>Recommendation<select id=\"recommendationFilter\"><option value=\"\">All recommendations</option><option value=\"Strong Hire\">Strong Hire</option><option value=\"Hire\">Hire</option><option value=\"Maybe\">Maybe</option><option value=\"No Hire\">No Hire</option></select></label>",
+    "<label>Integrity<select id=\"integrityFilter\"><option value=\"\">All integrity levels</option><option value=\"Clear\">Clear</option><option value=\"Low\">Low</option><option value=\"Medium\">Medium</option><option value=\"High\">High</option></select></label>",
+    "<label>Minimum score<input id=\"scoreFilter\" type=\"number\" min=\"0\" max=\"100\" placeholder=\"0\"></label>",
+    "<button id=\"resetSubmissionFilters\" class=\"button secondary\" type=\"button\">Reset</button>",
+    "</div>",
+    "<div class=\"table-wrap\"><table id=\"submissionsTable\">",
     "<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Candidate ID</th><th>AI score</th><th>Recommendation</th><th>Integrity</th><th>Summary</th><th>Good</th><th>Bad</th><th>Fit criteria</th><th>Submitted</th></tr></thead>",
     "<tbody>" + (rows || "<tr><td colspan=\"12\">No candidates yet.</td></tr>") + "</tbody>",
-    "</table></div></section>"
+    "</table></div></section>",
+    submissionFilterScript()
+  ].join("");
+}
+
+function submissionFilterScript() {
+  return [
+    "<script>",
+    "(function(){",
+    "var table=document.getElementById('submissionsTable');if(!table){return;}",
+    "var rows=Array.prototype.slice.call(table.querySelectorAll('[data-submission-row]'));",
+    "var search=document.getElementById('submissionSearch');",
+    "var recommendation=document.getElementById('recommendationFilter');",
+    "var integrity=document.getElementById('integrityFilter');",
+    "var score=document.getElementById('scoreFilter');",
+    "var reset=document.getElementById('resetSubmissionFilters');",
+    "var count=document.getElementById('submissionCount');",
+    "function apply(){var q=(search.value||'').trim().toLowerCase();var rec=recommendation.value||'';var integ=integrity.value||'';var min=Number(score.value||0);var shown=0;rows.forEach(function(row){var ok=true;if(q&&String(row.dataset.search||'').indexOf(q)===-1){ok=false;}if(rec&&row.dataset.recommendation!==rec){ok=false;}if(integ&&row.dataset.integrity!==integ){ok=false;}if(min&&Number(row.dataset.score||0)<min){ok=false;}row.style.display=ok?'':'none';if(ok){shown+=1;}});if(count){count.textContent=shown+' shown';}}",
+    "[search,recommendation,integrity,score].forEach(function(input){if(input){input.addEventListener('input',apply);input.addEventListener('change',apply);}});",
+    "if(reset){reset.addEventListener('click',function(){search.value='';recommendation.value='';integrity.value='';score.value='';apply();});}",
+    "apply();",
+    "})();",
+    "</script>"
   ].join("");
 }
 
@@ -2328,7 +2377,7 @@ function css() {
     ".job-card{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px}.job-card h2{margin:4px 0 6px;font-size:22px}",
     ".eyebrow{margin:0 0 8px;color:var(--accent);font-size:12px;font-weight:800;letter-spacing:0;text-transform:uppercase}",
     ".button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:0 16px;border:1px solid var(--brand);border-radius:6px;background:var(--brand);color:white;font-weight:800;text-decoration:none;cursor:pointer}",
-    ".button:hover{background:var(--brand-dark)}.button.secondary{background:white;color:var(--brand)}.button.full{width:100%}.button:disabled{opacity:.65;cursor:wait}",
+    ".button:hover{background:var(--brand-dark)}.button.secondary{background:white;color:var(--brand)}.button.compact{min-height:34px;padding:0 10px;font-size:12px;white-space:nowrap}.button.full{width:100%}.button:disabled{opacity:.65;cursor:wait}",
     ".split{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:28px;align-items:start}.preflight-grid{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:22px;align-items:start}.panel,.auth,.interview,.complete,.wide{padding:24px}.auth{width:min(420px,100%);margin:8vh auto 0}",
     ".interview{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px;align-items:start}.interview-main{min-width:0}.interview-side{position:sticky;top:86px;display:grid;gap:14px}.question-kicker{display:flex;justify-content:space-between;gap:16px;margin:0 0 14px;color:var(--accent);font-size:12px;font-weight:800;text-transform:uppercase}.question-title{margin:0 0 14px;font-size:clamp(30px,3.8vw,52px);line-height:1.08;letter-spacing:0}.question-meta{margin:0 0 18px}.timer-card,.side-card{padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc}.timer-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.timer-grid div{padding:12px;border:1px solid #dbe4ee;border-radius:6px;background:white}.timer-grid span{display:block;margin-bottom:4px;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase}.timer-grid strong,.side-card strong{display:block;color:var(--ink);font-size:26px;line-height:1}",
     ".form{display:grid;gap:16px}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}",
@@ -2342,9 +2391,9 @@ function css() {
     ".clean-list{margin:0;padding-left:18px;color:#344054;line-height:1.65}.topic-box{margin-top:22px;padding:16px;border:1px solid #c8d1ff;border-radius:8px;background:#f4f6ff}.topic-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.topic-chip{display:inline-flex;align-items:center;min-height:34px;padding:6px 10px;border:1px solid #aab8ff;border-radius:6px;background:#eef1ff;color:#1d2939;font-weight:700}.diagram-panel{margin:18px 0;padding:14px;border:1px solid #c8d1ff;border-radius:8px;background:#f7f8ff}.diagram-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px;color:#475467;font-size:12px;font-weight:800;text-transform:uppercase}.mermaid{margin:0;overflow:auto;text-align:center;background:white;border:1px solid #e1e7f5;border-radius:6px;padding:12px}.checks{display:grid;gap:10px;margin:14px 0}.check-row{margin:0;padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc;color:#475467}.check-row.ok{border-color:#9dd4c9;background:#eefaf7;color:#115e59}.check-row.bad{border-color:#f6c7a7;background:#fff4ed;color:#93370d}.hidden{display:none}.next-card{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;text-align:left}.next-card p{margin:6px 0 0}",
     ".rules-panel{margin-top:22px}.rules-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;color:#475467;font-size:12px;font-weight:800;text-transform:uppercase}.rules-head strong{color:var(--brand)}.rules-grid,.rules-admin-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.rule-card{padding:16px;border-radius:8px;border:1px solid var(--line)}.rule-card h3{margin:0 0 10px;font-size:18px}.rule-card ul{margin:0;padding-left:18px;line-height:1.55}.rule-card.allowed{border-color:#9dd4c9;background:#eefaf7}.rule-card.blocked{border-color:#f6c7a7;background:#fff4ed}.rule-card.allowed h3{color:#115e59}.rule-card.blocked h3{color:#93370d}.rules-admin{display:grid;gap:14px;padding:18px;border:1px solid #c8d1ff;border-radius:8px;background:#f7f8ff}.rules-admin h3{margin:0;font-size:20px}.rule-fieldset{display:grid;gap:12px;margin:0;padding:16px;border:1px solid #d8def8;border-radius:8px;background:white}.rule-fieldset legend{padding:0 6px;color:#344054;font-weight:800}.rule-check{align-items:flex-start;min-height:auto;padding:8px 0}",
     ".table-wrap{overflow-x:auto;background:white;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:13px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc;color:#475467;font-size:12px;text-transform:uppercase;letter-spacing:0}tr:last-child td{border-bottom:0}",
-    ".status-form{display:flex;gap:10px;align-items:center}.empty{padding:46px 0;text-align:center}.complete{max-width:680px;margin:8vh auto 0;text-align:center}.section-gap{margin-top:24px}.pill{display:inline-flex;padding:3px 8px;border-radius:999px;background:#eef6f5;color:#115e59;font-weight:800;font-size:12px}.risk-high{background:#fef3f2;color:#b42318}.risk-medium{background:#fff4ed;color:#c4320a}.risk-low{background:#fffaeb;color:#b54708}.risk-clear{background:#eef6f5;color:#115e59}",
+    ".status-form,.action-row,.admin-actions{display:flex;gap:10px;align-items:center}.action-row{flex-wrap:wrap}.admin-actions{flex-wrap:wrap;justify-content:flex-end}.filter-bar{display:grid;grid-template-columns:minmax(240px,1.4fr) minmax(180px,1fr) minmax(170px,1fr) minmax(130px,.6fr) auto;gap:12px;align-items:end;margin:16px 0}.empty{padding:46px 0;text-align:center}.complete{max-width:680px;margin:8vh auto 0;text-align:center}.section-gap{margin-top:24px}.pill{display:inline-flex;padding:3px 8px;border-radius:999px;background:#eef6f5;color:#115e59;font-weight:800;font-size:12px}.risk-high{background:#fef3f2;color:#b42318}.risk-medium{background:#fff4ed;color:#c4320a}.risk-low{background:#fffaeb;color:#b54708}.risk-clear{background:#eef6f5;color:#115e59}",
     ".report-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.metric-card{padding:18px;border:1px solid var(--line);border-radius:8px;background:white;box-shadow:0 8px 24px rgba(17,24,39,.05)}.metric-card span{display:block;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase}.metric-card strong{display:block;margin:8px 0;font-size:36px;line-height:1}.metric-card .small-id{font-size:15px;line-height:1.3;word-break:break-all}.answer-stack{display:grid;gap:16px}.answer-card{padding:20px;border:1px solid var(--line);border-radius:8px;background:white}.answer-card h3{margin:10px 0 10px;font-size:22px;line-height:1.25}.answer-head{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--accent);font-size:12px;font-weight:800;text-transform:uppercase}.answer-text{margin-top:12px;padding:14px;border:1px solid #e4e9f2;border-radius:6px;background:#f8fafc;color:#344054;line-height:1.55}.answer-text p{margin:0 0 10px}.option-list{margin:12px 0;padding-left:24px;color:#344054}.event-list{display:grid;gap:10px}.event-list div{padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc}.event-list strong{display:block;text-transform:capitalize}.event-list span{display:block;color:var(--muted);font-size:12px}.event-list p{margin:6px 0 0;color:#344054}",
-    "@media(max-width:900px){.interview{grid-template-columns:1fr}.interview-side{position:static;grid-template-columns:1fr 1fr}.side-card:last-child{grid-column:1/-1}}",
-    "@media(max-width:760px){.topbar,.row,.job-card,.status-form{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid,.interview-side,.report-grid,.rules-grid,.rules-admin-grid{grid-template-columns:1fr}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{font-size:32px}.question-title{font-size:30px}.question-kicker{display:grid}.timer-grid{grid-template-columns:1fr}}"
+    "@media(max-width:900px){.interview{grid-template-columns:1fr}.interview-side{position:static;grid-template-columns:1fr 1fr}.side-card:last-child{grid-column:1/-1}.filter-bar{grid-template-columns:1fr 1fr}}",
+    "@media(max-width:760px){.topbar,.row,.job-card,.status-form,.admin-actions{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid,.interview-side,.report-grid,.rules-grid,.rules-admin-grid,.filter-bar{grid-template-columns:1fr}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{font-size:32px}.question-title{font-size:30px}.question-kicker{display:grid}.timer-grid{grid-template-columns:1fr}}"
   ].join("");
 }
