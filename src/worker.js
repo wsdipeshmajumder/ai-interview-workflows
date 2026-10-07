@@ -120,6 +120,11 @@ async function route(request, env) {
     if (!admin) return redirect("/admin/login");
     return updateJobSettingsAction(request, env, path.split("/")[3]);
   }
+  if (path.startsWith("/admin/jobs/") && path.indexOf("/applications/") !== -1 && method === "GET") {
+    if (!admin) return redirect("/admin/login");
+    const parts = path.split("/");
+    return adminApplicationPage(env, admin, parts[3], parts[5]);
+  }
   if (path.startsWith("/admin/jobs/") && method === "GET") {
     if (!admin) return redirect("/admin/login");
     return adminJobPage(env, admin, path.split("/")[3]);
@@ -265,6 +270,7 @@ async function answerInterview(request, env) {
     type: question.type || "free_text",
     options: question.options || [],
     correctOption: question.correctOption || "",
+    diagramMermaid: question.diagramMermaid || "",
     answer: answer,
     answeredAt: new Date().toISOString()
   };
@@ -329,6 +335,17 @@ async function adminJobPage(env, admin, jobId) {
   if (!job) return html(layout(env, "Not found", errorView("Job not found."), { admin: admin }), 404);
   const applications = await readApplications(env, job);
   return html(layout(env, job.title, adminJobView(job, applications), { admin: admin }));
+}
+
+async function adminApplicationPage(env, admin, jobId, applicationId) {
+  const job = await getJob(env, jobId);
+  if (!job) return html(layout(env, "Not found", errorView("Job not found."), { admin: admin }), 404);
+  const applications = await readApplications(env, job);
+  const application = applications.find(function(item) {
+    return item.id === applicationId;
+  });
+  if (!application) return html(layout(env, "Not found", errorView("Candidate report not found."), { admin: admin }), 404);
+  return html(layout(env, "Candidate report", adminApplicationView(job, application), { admin: admin }));
 }
 
 async function createJobAction(request, env, admin) {
@@ -775,7 +792,7 @@ function adminJobView(job, applications) {
     const ev = application.evaluation || {};
     return [
       "<tr>",
-      "<td>" + escapeHtml(application.candidate.name || "") + "</td>",
+      "<td><a href=\"/admin/jobs/" + encodeURIComponent(job.id) + "/applications/" + encodeURIComponent(application.id) + "\">" + escapeHtml(application.candidate.name || "") + "</a></td>",
       "<td>" + escapeHtml(application.candidate.email || "") + "</td>",
       "<td>" + escapeHtml(application.candidate.phone || "") + "</td>",
       "<td>" + escapeHtml(application.candidateId || "") + "</td>",
@@ -817,6 +834,78 @@ function adminJobView(job, applications) {
     "<tbody>" + (rows || "<tr><td colspan=\"12\">No candidates yet.</td></tr>") + "</tbody>",
     "</table></div></section>"
   ].join("");
+}
+
+function adminApplicationView(job, application) {
+  const ev = application.evaluation || {};
+  const rubricRows = Array.isArray(ev.rubric) ? ev.rubric.map(function(item) {
+    return "<tr><td>" + escapeHtml(item.area || "") + "</td><td><strong>" + escapeHtml(item.score || "") + "</strong></td><td>" + escapeHtml(item.comment || "") + "</td></tr>";
+  }).join("") : "";
+  const criteriaRows = Array.isArray(ev.fitCriteria) ? ev.fitCriteria.map(function(item) {
+    return "<tr><td>" + escapeHtml(item.criterion || "") + "</td><td>" + (item.met ? "<span class=\"pill\">Met</span>" : "<span class=\"pill risk-high\">Not met</span>") + "</td><td>" + escapeHtml(item.evidence || "") + "</td></tr>";
+  }).join("") : "";
+  const answers = (application.answers || []).map(function(answer, index) {
+    return answerCard(answer, index);
+  }).join("");
+  const events = integrityEventsView(application.integrityEvents || []);
+  return [
+    "<section class=\"page-head row\">",
+    "<div><p class=\"eyebrow\">Candidate report</p><h1>" + escapeHtml(application.candidate.name || "Candidate") + "</h1><p>" + escapeHtml(job.title) + " · " + escapeHtml(application.submittedAt || "") + "</p></div>",
+    "<a class=\"button secondary\" href=\"/admin/jobs/" + encodeURIComponent(job.id) + "\">Back to job</a>",
+    "</section>",
+    "<section class=\"report-grid\">",
+    "<article class=\"metric-card\"><span>AI score</span><strong>" + escapeHtml(ev.score || 0) + "</strong><p>" + escapeHtml(ev.recommendation || "") + "</p></article>",
+    "<article class=\"metric-card\"><span>Integrity</span><strong>" + escapeHtml(application.integrityRisk || "Clear") + "</strong><p>" + escapeHtml(integritySummary(application.integrityEvents || [])) + "</p></article>",
+    "<article class=\"metric-card\"><span>Candidate ID</span><strong class=\"small-id\">" + escapeHtml(application.candidateId || application.id || "") + "</strong><p>" + escapeHtml(application.candidate.email || "") + "</p></article>",
+    "</section>",
+    "<section class=\"panel section-gap\"><h2>AI summary</h2><p>" + escapeHtml(ev.summary || "") + "</p><div class=\"grid-2\"><div><h3>Good</h3><ul>" + listItems(ev.good || ev.strengths) + "</ul></div><div><h3>Bad / risks</h3><ul>" + listItems(ev.bad || ev.risks) + "</ul></div></div></section>",
+    "<section class=\"section-gap\"><h2>Fit criteria</h2><div class=\"table-wrap\"><table><thead><tr><th>Criterion</th><th>Status</th><th>Evidence</th></tr></thead><tbody>" + (criteriaRows || "<tr><td colspan=\"3\">No criteria returned.</td></tr>") + "</tbody></table></div></section>",
+    "<section class=\"section-gap\"><h2>Rubric</h2><div class=\"table-wrap\"><table><thead><tr><th>Area</th><th>Score</th><th>Comment</th></tr></thead><tbody>" + (rubricRows || "<tr><td colspan=\"3\">No rubric returned.</td></tr>") + "</tbody></table></div></section>",
+    "<section class=\"panel section-gap\"><h2>Suggested human-round follow-ups</h2><ul>" + listItems(ev.followUpQuestions) + "</ul></section>",
+    "<section class=\"section-gap\"><h2>Answers</h2><div class=\"answer-stack\">" + (answers || "<div class=\"panel\">No answers recorded.</div>") + "</div></section>",
+    "<section class=\"panel section-gap\"><h2>Integrity events</h2>" + events + "</section>",
+    mermaidScript()
+  ].join("");
+}
+
+function answerCard(answer, index) {
+  const type = answer.type || "free_text";
+  const selected = selectedOption(answer.answer || "");
+  const correct = clean(answer.correctOption || "");
+  const correctness = type === "mcq" && correct ? (selected === correct ? "<span class=\"pill\">Correct</span>" : "<span class=\"pill risk-high\">Expected " + escapeHtml(correct) + "</span>") : "";
+  const options = Array.isArray(answer.options) && answer.options.length ? "<ol class=\"option-list\">" + answer.options.map(function(option, optionIndex) {
+    const letter = String.fromCharCode(65 + optionIndex);
+    return "<li><strong>" + letter + ".</strong> " + escapeHtml(option) + "</li>";
+  }).join("") + "</ol>" : "";
+  return [
+    "<article class=\"answer-card\">",
+    "<div class=\"answer-head\"><span>Question " + (index + 1) + " · " + escapeHtml(type.replace(/_/g, " ")) + "</span>" + correctness + "</div>",
+    "<h3>" + escapeHtml(answer.question || "") + "</h3>",
+    renderMermaidDiagram(answer),
+    options,
+    "<p class=\"muted\">" + escapeHtml(answer.competency || "") + " · " + escapeHtml(answer.complexity || "") + "</p>",
+    "<div class=\"answer-text\">" + formatText(answer.answer || "") + "</div>",
+    "</article>"
+  ].join("");
+}
+
+function integrityEventsView(events) {
+  if (!Array.isArray(events) || !events.length) return "<p class=\"muted\">No integrity signals were logged.</p>";
+  return "<div class=\"event-list\">" + events.slice(-80).map(function(event) {
+    return "<div><strong>" + escapeHtml(clean(event.type).replace(/_/g, " ")) + "</strong><span>" + escapeHtml(event.at || "") + "</span><p>" + escapeHtml(event.detail || "") + "</p></div>";
+  }).join("") + "</div>";
+}
+
+function listItems(items) {
+  const list = Array.isArray(items) ? items.filter(Boolean) : splitList(items);
+  return list.length ? list.map(function(item) {
+    return "<li>" + escapeHtml(item) + "</li>";
+  }).join("") : "<li>No detail returned.</li>";
+}
+
+function selectedOption(answer) {
+  const match = clean(answer || "").match(/^([A-Z])\./i);
+  return match ? match[1].toUpperCase() : "";
 }
 
 function errorView(message) {
@@ -1972,7 +2061,8 @@ function css() {
     ".clean-list{margin:0;padding-left:18px;color:#344054;line-height:1.65}.topic-box{margin-top:22px;padding:16px;border:1px solid #c8d1ff;border-radius:8px;background:#f4f6ff}.topic-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.topic-chip{display:inline-flex;align-items:center;min-height:34px;padding:6px 10px;border:1px solid #aab8ff;border-radius:6px;background:#eef1ff;color:#1d2939;font-weight:700}.diagram-panel{margin:18px 0;padding:14px;border:1px solid #c8d1ff;border-radius:8px;background:#f7f8ff}.diagram-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px;color:#475467;font-size:12px;font-weight:800;text-transform:uppercase}.mermaid{margin:0;overflow:auto;text-align:center;background:white;border:1px solid #e1e7f5;border-radius:6px;padding:12px}.checks{display:grid;gap:10px;margin:14px 0}.check-row{margin:0;padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc;color:#475467}.check-row.ok{border-color:#9dd4c9;background:#eefaf7;color:#115e59}.check-row.bad{border-color:#f6c7a7;background:#fff4ed;color:#93370d}.hidden{display:none}.next-card{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;text-align:left}.next-card p{margin:6px 0 0}",
     ".table-wrap{overflow-x:auto;background:white;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:13px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc;color:#475467;font-size:12px;text-transform:uppercase;letter-spacing:0}tr:last-child td{border-bottom:0}",
     ".status-form{display:flex;gap:10px;align-items:center}.empty{padding:46px 0;text-align:center}.complete{max-width:680px;margin:8vh auto 0;text-align:center}.section-gap{margin-top:24px}.pill{display:inline-flex;padding:3px 8px;border-radius:999px;background:#eef6f5;color:#115e59;font-weight:800;font-size:12px}.risk-high{background:#fef3f2;color:#b42318}.risk-medium{background:#fff4ed;color:#c4320a}.risk-low{background:#fffaeb;color:#b54708}.risk-clear{background:#eef6f5;color:#115e59}",
+    ".report-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.metric-card{padding:18px;border:1px solid var(--line);border-radius:8px;background:white;box-shadow:0 8px 24px rgba(17,24,39,.05)}.metric-card span{display:block;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase}.metric-card strong{display:block;margin:8px 0;font-size:36px;line-height:1}.metric-card .small-id{font-size:15px;line-height:1.3;word-break:break-all}.answer-stack{display:grid;gap:16px}.answer-card{padding:20px;border:1px solid var(--line);border-radius:8px;background:white}.answer-card h3{margin:10px 0 10px;font-size:22px;line-height:1.25}.answer-head{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--accent);font-size:12px;font-weight:800;text-transform:uppercase}.answer-text{margin-top:12px;padding:14px;border:1px solid #e4e9f2;border-radius:6px;background:#f8fafc;color:#344054;line-height:1.55}.answer-text p{margin:0 0 10px}.option-list{margin:12px 0;padding-left:24px;color:#344054}.event-list{display:grid;gap:10px}.event-list div{padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc}.event-list strong{display:block;text-transform:capitalize}.event-list span{display:block;color:var(--muted);font-size:12px}.event-list p{margin:6px 0 0;color:#344054}",
     "@media(max-width:900px){.interview{grid-template-columns:1fr}.interview-side{position:static;grid-template-columns:1fr 1fr}.side-card:last-child{grid-column:1/-1}}",
-    "@media(max-width:760px){.topbar,.row,.job-card,.status-form{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid,.interview-side{grid-template-columns:1fr}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{font-size:32px}.question-title{font-size:30px}.question-kicker{display:grid}.timer-grid{grid-template-columns:1fr}}"
+    "@media(max-width:760px){.topbar,.row,.job-card,.status-form{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid,.interview-side,.report-grid{grid-template-columns:1fr}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{font-size:32px}.question-title{font-size:30px}.question-kicker{display:grid}.timer-grid{grid-template-columns:1fr}}"
   ].join("");
 }
