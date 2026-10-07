@@ -13,7 +13,12 @@ const JOBS_HEADER = [
   "min_questions",
   "max_questions",
   "passing_score",
-  "allow_retakes"
+  "allow_retakes",
+  "ai_policy",
+  "allowed_rule_ids",
+  "not_allowed_rule_ids",
+  "custom_allowed_rules",
+  "custom_not_allowed_rules"
 ];
 
 const APPLICATION_HEADER = [
@@ -45,6 +50,48 @@ const DEFAULT_MAX_QUESTIONS = 30;
 const DEFAULT_PASSING_SCORE = 85;
 const AI_TIMEOUT_MS = 25000;
 const LOGO_URL = "https://cdn.prod.website-files.com/625511bb3e8e42292025b9d8/6a9808ffdc2bb83ea22d9fee_ws-logo-ai-in-motion-dark.svg";
+
+const AI_POLICY_OPTIONS = [
+  {
+    id: "no_ai",
+    label: "No AI or external help",
+    hint: "Closed-book interview. Candidate must answer from their own knowledge and experience.",
+    allowed: "Use your own knowledge, resume, the JD, and the instructions shown on this screen.",
+    notAllowed: "Do not use ChatGPT, Gemini, Claude, search engines, copied answers, or other external answer sources during the timed interview."
+  },
+  {
+    id: "ai_reference",
+    label: "AI/reference help allowed",
+    hint: "Candidate may consult AI/search/reference tools, but must write and defend their own answer.",
+    allowed: "AI, search, documentation, and public references are allowed for support, but every final answer must be written in your own words and defended in the human round.",
+    notAllowed: "Do not paste AI-generated, copied, or prepared text as your answer. Paste attempts are blocked and logged."
+  },
+  {
+    id: "open_book",
+    label: "Open-book resources allowed",
+    hint: "Candidate may use notes, docs, search, and AI as references. Human help is still forbidden.",
+    allowed: "Open-book resources are allowed, including personal notes, documentation, search, and AI tools as references. You remain responsible for every answer.",
+    notAllowed: "Do not let another person answer, coach, edit, or operate the interview for you."
+  }
+];
+
+const ALLOWED_RULE_OPTIONS = [
+  { id: "resume_jd", text: "Use your own resume, portfolio, past-work memory, and the JD shown here." },
+  { id: "scratchpad", text: "Use pen and paper, a calculator, or a spreadsheet for rough work and calculations." },
+  { id: "clarifying_assumptions", text: "State assumptions when a question is ambiguous instead of guessing silently." },
+  { id: "own_examples", text: "Use real examples, metrics, tools, tradeoffs, and failure cases from your own experience." }
+];
+
+const NOT_ALLOWED_RULE_OPTIONS = [
+  { id: "no_other_person", text: "No other person may answer, coach, edit, or guide you during the timed interview." },
+  { id: "no_paste", text: "Do not paste prepared answers or copied content into the answer box. Paste attempts are blocked and logged." },
+  { id: "no_refresh", text: "Do not refresh, restart, or abandon the interview once the timer begins." },
+  { id: "no_sharing", text: "Do not record, screenshot, share, or distribute interview questions or content." },
+  { id: "no_fake_claims", text: "Do not invent work experience, metrics, tools, employers, or outcomes you cannot defend later." }
+];
+
+const DEFAULT_ALLOWED_RULE_IDS = ["resume_jd", "scratchpad", "clarifying_assumptions", "own_examples"];
+const DEFAULT_NOT_ALLOWED_RULE_IDS = ["no_other_person", "no_paste", "no_refresh", "no_sharing", "no_fake_claims"];
 
 const SAMPLE_JD = [
   "Evaluate Model Outputs: Audit, score, and validate outputs from various Generative AI models and LLM tools to ensure operational accuracy and contextual relevance.",
@@ -362,7 +409,8 @@ async function createJobAction(request, env, admin) {
     allowRetakes: settingBool(form.get("allowRetakes")),
     status: clean(form.get("status")) || "active",
     jd: normalizeText(form.get("jd") || "", 12000),
-    marketContext: normalizeText(form.get("marketContext") || env.DEFAULT_MARKET_CONTEXT || "", 4000)
+    marketContext: normalizeText(form.get("marketContext") || env.DEFAULT_MARKET_CONTEXT || "", 4000),
+    candidateRules: rulesFromForm(form)
   };
   if (input.maxQuestions < input.minQuestions) input.maxQuestions = input.minQuestions;
   if (!input.title || !input.jd) {
@@ -387,7 +435,8 @@ async function updateJobSettingsAction(request, env, jobId) {
     passingScore: settingNumber(form.get("passingScore"), DEFAULT_PASSING_SCORE, 50, 100),
     allowRetakes: settingBool(form.get("allowRetakes")),
     jd: normalizeText(form.get("jd") || "", 12000),
-    marketContext: normalizeText(form.get("marketContext") || env.DEFAULT_MARKET_CONTEXT || "", 4000)
+    marketContext: normalizeText(form.get("marketContext") || env.DEFAULT_MARKET_CONTEXT || "", 4000),
+    candidateRules: rulesFromForm(form)
   };
   if (input.maxQuestions < input.minQuestions) input.maxQuestions = input.minQuestions;
   if (!input.jd) return redirect("/admin/jobs/" + encodeURIComponent(jobId));
@@ -500,9 +549,10 @@ function preInterviewView(job, pending, token) {
     "<li>" + escapeHtml(questionRangeText(settings)) + " across baseline, intermediate, advanced, and pressure-test questions.</li>",
     "<li>Questions are based on your resume, the JD, and current expectations for this role.</li>",
     "<li>Answer with concrete examples, metrics, tools, tradeoffs, and failure cases. Generic answers are scored strictly.</li>",
-    "<li>Tab switching, focus loss, refresh attempts, and copy/paste attempts are logged for recruiter review.</li>",
+    "<li>Focus changes, refresh attempts, and copy/paste attempts are logged for recruiter review and interpreted against the rules below.</li>",
     "<li>You cannot see the internal score after submission. The recruiter will review the AI analysis and get back to you.</li>",
     "</ul>",
+    renderCandidateRules(job),
     "<div class=\"topic-box\"><strong>You will be interviewed on these topics</strong><div class=\"topic-list\">" + topics + "</div></div>",
     "</section>",
     "<section class=\"panel\">",
@@ -615,7 +665,7 @@ function interviewView(job, state, token, message) {
     "</div>",
     "<div class=\"side-card integrity-card\">",
     "<p class=\"eyebrow\">Integrity monitor</p>",
-    "<p id=\"integrityStatus\" class=\"hint\">Tab focus, copy/paste, and refresh signals are logged for recruiter review.</p>",
+    "<p id=\"integrityStatus\" class=\"hint\">Focus, copy/paste, and refresh signals are logged and interpreted against the JD rules.</p>",
     "</div>",
     "</aside>",
     "</section>",
@@ -764,6 +814,7 @@ function adminHomeView(jobs, counts, mode) {
 
 function newJobPage(env, admin, defaults, message) {
   defaults = defaults || {};
+  const ruleDefaults = defaults.candidateRules ? Object.assign({}, defaults, defaults.candidateRules) : defaults;
   return layout(env, "Add new JD", [
     message ? "<div class=\"flash\">" + escapeHtml(message) + "</div>" : "",
     "<section class=\"page-head\"><h1>Add new JD</h1><p>Paste any role JD and set the interview pacing. Each JD creates one tab in the configured Google Sheet.</p></section>",
@@ -782,6 +833,7 @@ function newJobPage(env, admin, defaults, message) {
     "</div>",
     "<label>Job description<textarea name=\"jd\" rows=\"12\" required placeholder=\"Paste the JD here. The interview will adapt to this JD, the resume, and the guidance below.\">" + escapeHtml(defaults.jd || "") + "</textarea></label>",
     "<label>Market trends and interviewer guidance<textarea name=\"marketContext\" rows=\"5\" placeholder=\"Optional: add role-specific trends, tools, screening emphasis, disqualifiers, or must-have skills.\">" + escapeHtml(defaults.marketContext || "") + "</textarea></label>",
+    candidateRulesControls(ruleDefaults),
     "<button class=\"button\" type=\"submit\">Add JD</button>",
     "</form>"
   ].join(""), { admin: admin });
@@ -827,6 +879,7 @@ function adminJobView(job, applications) {
     "</div>",
     "<label>Job description<textarea name=\"jd\" rows=\"10\" required>" + escapeHtml(job.jd || "") + "</textarea></label>",
     "<label>Market trends and interviewer guidance<textarea name=\"marketContext\" rows=\"4\">" + escapeHtml(job.marketContext || "") + "</textarea></label>",
+    candidateRulesControls(job),
     "<button class=\"button\" type=\"submit\">Save interview controls</button>",
     "</form>",
     "</section>",
@@ -962,7 +1015,7 @@ function resumeExtractScripts() {
 async function readJobs(env) {
   if (!hasGoogle(env)) return readFallbackJobs(env);
   await ensureJobsSheet(env);
-  const rows = await valuesGet(env, quoteSheet("Jobs") + "!A2:O");
+  const rows = await valuesGet(env, quoteSheet("Jobs") + "!A2:T");
   return rows.filter(function(row) {
     return row[0] && row[1];
   }).map(rowToJob).map(hydrateJob).sort(function(a, b) {
@@ -993,7 +1046,12 @@ async function createJob(env, input) {
     sheetTitle: safeSheetTitle(input.title) + " " + id("").slice(-6),
     createdAt: new Date().toISOString(),
     jd: input.jd,
-    marketContext: input.marketContext
+    marketContext: input.marketContext,
+    aiPolicy: input.candidateRules.aiPolicy,
+    allowedRuleIds: input.candidateRules.allowedRuleIds,
+    notAllowedRuleIds: input.candidateRules.notAllowedRuleIds,
+    customAllowedRules: input.candidateRules.customAllowedRules,
+    customNotAllowedRules: input.candidateRules.customNotAllowedRules
   };
   if (job.maxQuestions < job.minQuestions) job.maxQuestions = job.minQuestions;
   if (!hasGoogle(env)) {
@@ -1020,7 +1078,7 @@ async function updateJobStatus(env, jobId, status) {
     return job;
   }
   const values = [JOBS_HEADER].concat(jobs.map(hydrateJob).map(jobToRow));
-  await valuesUpdate(env, quoteSheet("Jobs") + "!A1:O", values);
+  await valuesUpdate(env, quoteSheet("Jobs") + "!A1:T", values);
   return job;
 }
 
@@ -1037,12 +1095,17 @@ async function updateJobSettings(env, jobId, input) {
   job.allowRetakes = settingBool(input.allowRetakes);
   job.jd = input.jd;
   job.marketContext = input.marketContext;
+  job.aiPolicy = input.candidateRules.aiPolicy;
+  job.allowedRuleIds = input.candidateRules.allowedRuleIds;
+  job.notAllowedRuleIds = input.candidateRules.notAllowedRuleIds;
+  job.customAllowedRules = input.candidateRules.customAllowedRules;
+  job.customNotAllowedRules = input.candidateRules.customNotAllowedRules;
   if (!hasGoogle(env)) {
     await writeFallbackJobs(env, jobs);
     return job;
   }
   const values = [JOBS_HEADER].concat(jobs.map(hydrateJob).map(jobToRow));
-  await valuesUpdate(env, quoteSheet("Jobs") + "!A1:O", values);
+  await valuesUpdate(env, quoteSheet("Jobs") + "!A1:T", values);
   return job;
 }
 
@@ -1212,7 +1275,12 @@ function rowToJob(row) {
     minQuestions: Number(row[11] || DEFAULT_MIN_QUESTIONS),
     maxQuestions: Number(row[12] || DEFAULT_MAX_QUESTIONS),
     passingScore: Number(row[13] || DEFAULT_PASSING_SCORE),
-    allowRetakes: settingBool(row[14])
+    allowRetakes: settingBool(row[14]),
+    aiPolicy: row[15] || "",
+    allowedRuleIds: parseRuleIds(row[16], null),
+    notAllowedRuleIds: parseRuleIds(row[17], null),
+    customAllowedRules: splitLines(row[18]),
+    customNotAllowedRules: splitLines(row[19])
   };
 }
 
@@ -1232,7 +1300,12 @@ function jobToRow(job) {
     interviewSettings(job).minQuestions,
     interviewSettings(job).maxQuestions,
     interviewSettings(job).passingScore,
-    interviewSettings(job).allowRetakes ? "TRUE" : "FALSE"
+    interviewSettings(job).allowRetakes ? "TRUE" : "FALSE",
+    candidateRules(job).aiPolicy.id,
+    candidateRules(job).allowedRuleIds.join(","),
+    candidateRules(job).notAllowedRuleIds.join(","),
+    candidateRules(job).customAllowedRules.join("\n"),
+    candidateRules(job).customNotAllowedRules.join("\n")
   ];
 }
 
@@ -1391,6 +1464,12 @@ function hydrateJob(job) {
   copy.maxQuestions = settings.maxQuestions;
   copy.passingScore = settings.passingScore;
   copy.allowRetakes = settings.allowRetakes;
+  const rules = candidateRules(copy);
+  copy.aiPolicy = rules.aiPolicy.id;
+  copy.allowedRuleIds = rules.allowedRuleIds;
+  copy.notAllowedRuleIds = rules.notAllowedRuleIds;
+  copy.customAllowedRules = rules.customAllowedRules;
+  copy.customNotAllowedRules = rules.customNotAllowedRules;
   return copy;
 }
 
@@ -1418,6 +1497,119 @@ function interviewMinutes(job, state) {
 
 function questionRangeText(settings) {
   return settings.minQuestions === settings.maxQuestions ? settings.minQuestions + " questions" : settings.minQuestions + "-" + settings.maxQuestions + " questions";
+}
+
+function rulesFromForm(form) {
+  return {
+    aiPolicy: clean(form.get("aiPolicy")) || "no_ai",
+    allowedRuleIds: form.getAll("allowedRuleIds").map(clean).filter(Boolean),
+    notAllowedRuleIds: form.getAll("notAllowedRuleIds").map(clean).filter(Boolean),
+    customAllowedRules: splitLines(form.get("customAllowedRules")),
+    customNotAllowedRules: splitLines(form.get("customNotAllowedRules"))
+  };
+}
+
+function candidateRules(job) {
+  const aiPolicy = aiPolicyById(job && job.aiPolicy);
+  const allowedRuleIds = parseRuleIds(job && job.allowedRuleIds, DEFAULT_ALLOWED_RULE_IDS);
+  const notAllowedRuleIds = parseRuleIds(job && job.notAllowedRuleIds, DEFAULT_NOT_ALLOWED_RULE_IDS);
+  const customAllowedRules = splitLines(job && job.customAllowedRules);
+  const customNotAllowedRules = splitLines(job && job.customNotAllowedRules);
+  const allowed = uniqueList([aiPolicy.allowed].concat(ruleTexts(ALLOWED_RULE_OPTIONS, allowedRuleIds), customAllowedRules));
+  const notAllowed = uniqueList([aiPolicy.notAllowed].concat(ruleTexts(NOT_ALLOWED_RULE_OPTIONS, notAllowedRuleIds), customNotAllowedRules));
+  return {
+    aiPolicy: aiPolicy,
+    allowedRuleIds: allowedRuleIds,
+    notAllowedRuleIds: notAllowedRuleIds,
+    customAllowedRules: customAllowedRules,
+    customNotAllowedRules: customNotAllowedRules,
+    allowed: allowed,
+    notAllowed: notAllowed
+  };
+}
+
+function aiPolicyById(value) {
+  const idValue = clean(value) || "no_ai";
+  return AI_POLICY_OPTIONS.find(function(option) {
+    return option.id === idValue;
+  }) || AI_POLICY_OPTIONS[0];
+}
+
+function ruleTexts(options, ids) {
+  return options.filter(function(option) {
+    return ids.indexOf(option.id) !== -1;
+  }).map(function(option) {
+    return option.text;
+  });
+}
+
+function parseRuleIds(value, fallback) {
+  let ids = [];
+  if (Array.isArray(value)) ids = value.map(clean);
+  else if (typeof value === "string" && value.trim().charAt(0) === "[") ids = safeJson(value, []).map(clean);
+  else ids = String(value || "").split(/[,;\n]/).map(clean);
+  ids = ids.filter(Boolean);
+  return ids.length || fallback === null ? ids : fallback.slice();
+}
+
+function splitLines(value) {
+  if (Array.isArray(value)) return value.map(clean).filter(Boolean);
+  return normalizeText(value || "", 4000).split(/\n|;/).map(clean).filter(Boolean);
+}
+
+function uniqueList(items) {
+  const seen = {};
+  const out = [];
+  items.map(clean).filter(Boolean).forEach(function(item) {
+    const key = item.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    out.push(item);
+  });
+  return out;
+}
+
+function candidateRulesControls(job) {
+  const rules = candidateRules(job || {});
+  const policyOptions = AI_POLICY_OPTIONS.map(function(option) {
+    return "<option value=\"" + escapeHtml(option.id) + "\"" + (rules.aiPolicy.id === option.id ? " selected" : "") + ">" + escapeHtml(option.label) + " - " + escapeHtml(option.hint) + "</option>";
+  }).join("");
+  return [
+    "<section class=\"rules-admin\">",
+    "<h3>Candidate rules before interview</h3>",
+    "<p class=\"hint\">These instructions appear vividly on the pre-interview screen. Activity signals are logged and interpreted against these rules.</p>",
+    "<label>AI / external help policy<select name=\"aiPolicy\">" + policyOptions + "</select></label>",
+    "<div class=\"rules-admin-grid\">",
+    "<fieldset class=\"rule-fieldset\"><legend>Allowed</legend>" + ruleCheckboxes("allowedRuleIds", ALLOWED_RULE_OPTIONS, rules.allowedRuleIds) + "<label>Extra allowed instructions<textarea name=\"customAllowedRules\" rows=\"4\" placeholder=\"One instruction per line\">" + escapeHtml(rules.customAllowedRules.join("\n")) + "</textarea></label></fieldset>",
+    "<fieldset class=\"rule-fieldset\"><legend>Not allowed</legend>" + ruleCheckboxes("notAllowedRuleIds", NOT_ALLOWED_RULE_OPTIONS, rules.notAllowedRuleIds) + "<label>Extra not-allowed instructions<textarea name=\"customNotAllowedRules\" rows=\"4\" placeholder=\"One instruction per line\">" + escapeHtml(rules.customNotAllowedRules.join("\n")) + "</textarea></label></fieldset>",
+    "</div>",
+    "</section>"
+  ].join("");
+}
+
+function ruleCheckboxes(name, options, selectedIds) {
+  return options.map(function(option) {
+    const checked = selectedIds.indexOf(option.id) !== -1 ? " checked" : "";
+    return "<label class=\"check rule-check\"><input name=\"" + escapeHtml(name) + "\" type=\"checkbox\" value=\"" + escapeHtml(option.id) + "\"" + checked + "> " + escapeHtml(option.text) + "</label>";
+  }).join("");
+}
+
+function renderCandidateRules(job) {
+  const rules = candidateRules(job);
+  return [
+    "<div class=\"rules-panel\">",
+    "<div class=\"rules-head\"><span>Interview rules</span><strong>" + escapeHtml(rules.aiPolicy.label) + "</strong></div>",
+    "<div class=\"rules-grid\">",
+    "<section class=\"rule-card allowed\"><h3>Allowed</h3><ul>" + listItems(rules.allowed) + "</ul></section>",
+    "<section class=\"rule-card blocked\"><h3>Not allowed</h3><ul>" + listItems(rules.notAllowed) + "</ul></section>",
+    "</div>",
+    "</div>"
+  ].join("");
+}
+
+function candidateRulesPrompt(job) {
+  const rules = candidateRules(job);
+  return "AI / external help policy: " + rules.aiPolicy.label + "\nAllowed:\n- " + rules.allowed.join("\n- ") + "\nNot allowed:\n- " + rules.notAllowed.join("\n- ");
 }
 
 function settingNumber(value, fallback, min, max) {
@@ -1492,6 +1684,7 @@ async function generateInterview(env, job, resumeText) {
     "JOB TITLE:\n" + job.title,
     "JD:\n" + normalizeText(job.jd, 10000),
     "MARKET CONTEXT:\n" + normalizeText(job.marketContext || env.DEFAULT_MARKET_CONTEXT || "", 4000),
+    "CANDIDATE RULES:\n" + candidateRulesPrompt(job),
     "RESUME:\n" + normalizeText(resumeText, 12000)
   ].join("\n\n");
   try {
@@ -1524,9 +1717,11 @@ async function evaluateInterview(env, job, state) {
     "{\"score\":number,\"recommendation\":\"Strong Hire|Hire|Maybe|No Hire\",\"summary\":\"string\",\"good\":[\"string\"],\"bad\":[\"string\"],\"fitCriteria\":[{\"criterion\":\"string\",\"met\":boolean,\"evidence\":\"string\"}],\"strengths\":[\"string\"],\"risks\":[\"string\"],\"followUpQuestions\":[\"string\"],\"rubric\":[{\"area\":\"string\",\"score\":number,\"comment\":\"string\"}]}",
     "Score out of 100 using this hard bar: " + settings.strongHireScore + "+ Strong Hire, " + settings.passingScore + "-" + (settings.strongHireScore - 1) + " Hire, " + settings.maybeScore + "-" + (settings.passingScore - 1) + " Maybe, below " + settings.maybeScore + " No Hire. Be comfortable giving No Hire.",
     "A passing candidate must meet criteria inferred from the JD, resume, and market context: role fundamentals, practical evidence, quality discipline, risk/privacy/compliance judgment where relevant, communication, and concrete metrics or examples. Missing evidence on any major criterion should prevent Hire.",
+    "Interpret integrity events against the candidate rules. If AI/reference help is allowed, focus on prohibited behaviors such as paste attempts, copied answers, another person helping, refresh/restart attempts, and unverifiable claims.",
     "JOB:\n" + job.title,
     "JD:\n" + normalizeText(job.jd, 9000),
     "MARKET CONTEXT:\n" + normalizeText(job.marketContext || env.DEFAULT_MARKET_CONTEXT || "", 3000),
+    "CANDIDATE RULES:\n" + candidateRulesPrompt(job),
     "RESUME:\n" + normalizeText(state.resumeText, 10000),
     "Q AND A:\n" + JSON.stringify(state.answers),
     "INTEGRITY EVENTS:\n" + JSON.stringify(state.integrityEvents || [])
@@ -2145,10 +2340,11 @@ function css() {
     ".flash{margin:0 0 18px;padding:12px 14px;border:1px solid #fedf89;border-radius:6px;background:#fffaeb;color:#93370d}",
     ".progress{height:8px;border-radius:999px;overflow:hidden;background:#e6ebf2;margin-bottom:24px}.progress span{display:block;height:100%;background:var(--brand)}",
     ".clean-list{margin:0;padding-left:18px;color:#344054;line-height:1.65}.topic-box{margin-top:22px;padding:16px;border:1px solid #c8d1ff;border-radius:8px;background:#f4f6ff}.topic-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.topic-chip{display:inline-flex;align-items:center;min-height:34px;padding:6px 10px;border:1px solid #aab8ff;border-radius:6px;background:#eef1ff;color:#1d2939;font-weight:700}.diagram-panel{margin:18px 0;padding:14px;border:1px solid #c8d1ff;border-radius:8px;background:#f7f8ff}.diagram-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px;color:#475467;font-size:12px;font-weight:800;text-transform:uppercase}.mermaid{margin:0;overflow:auto;text-align:center;background:white;border:1px solid #e1e7f5;border-radius:6px;padding:12px}.checks{display:grid;gap:10px;margin:14px 0}.check-row{margin:0;padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc;color:#475467}.check-row.ok{border-color:#9dd4c9;background:#eefaf7;color:#115e59}.check-row.bad{border-color:#f6c7a7;background:#fff4ed;color:#93370d}.hidden{display:none}.next-card{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;text-align:left}.next-card p{margin:6px 0 0}",
+    ".rules-panel{margin-top:22px}.rules-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;color:#475467;font-size:12px;font-weight:800;text-transform:uppercase}.rules-head strong{color:var(--brand)}.rules-grid,.rules-admin-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.rule-card{padding:16px;border-radius:8px;border:1px solid var(--line)}.rule-card h3{margin:0 0 10px;font-size:18px}.rule-card ul{margin:0;padding-left:18px;line-height:1.55}.rule-card.allowed{border-color:#9dd4c9;background:#eefaf7}.rule-card.blocked{border-color:#f6c7a7;background:#fff4ed}.rule-card.allowed h3{color:#115e59}.rule-card.blocked h3{color:#93370d}.rules-admin{display:grid;gap:14px;padding:18px;border:1px solid #c8d1ff;border-radius:8px;background:#f7f8ff}.rules-admin h3{margin:0;font-size:20px}.rule-fieldset{display:grid;gap:12px;margin:0;padding:16px;border:1px solid #d8def8;border-radius:8px;background:white}.rule-fieldset legend{padding:0 6px;color:#344054;font-weight:800}.rule-check{align-items:flex-start;min-height:auto;padding:8px 0}",
     ".table-wrap{overflow-x:auto;background:white;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:13px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc;color:#475467;font-size:12px;text-transform:uppercase;letter-spacing:0}tr:last-child td{border-bottom:0}",
     ".status-form{display:flex;gap:10px;align-items:center}.empty{padding:46px 0;text-align:center}.complete{max-width:680px;margin:8vh auto 0;text-align:center}.section-gap{margin-top:24px}.pill{display:inline-flex;padding:3px 8px;border-radius:999px;background:#eef6f5;color:#115e59;font-weight:800;font-size:12px}.risk-high{background:#fef3f2;color:#b42318}.risk-medium{background:#fff4ed;color:#c4320a}.risk-low{background:#fffaeb;color:#b54708}.risk-clear{background:#eef6f5;color:#115e59}",
     ".report-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.metric-card{padding:18px;border:1px solid var(--line);border-radius:8px;background:white;box-shadow:0 8px 24px rgba(17,24,39,.05)}.metric-card span{display:block;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase}.metric-card strong{display:block;margin:8px 0;font-size:36px;line-height:1}.metric-card .small-id{font-size:15px;line-height:1.3;word-break:break-all}.answer-stack{display:grid;gap:16px}.answer-card{padding:20px;border:1px solid var(--line);border-radius:8px;background:white}.answer-card h3{margin:10px 0 10px;font-size:22px;line-height:1.25}.answer-head{display:flex;align-items:center;justify-content:space-between;gap:12px;color:var(--accent);font-size:12px;font-weight:800;text-transform:uppercase}.answer-text{margin-top:12px;padding:14px;border:1px solid #e4e9f2;border-radius:6px;background:#f8fafc;color:#344054;line-height:1.55}.answer-text p{margin:0 0 10px}.option-list{margin:12px 0;padding-left:24px;color:#344054}.event-list{display:grid;gap:10px}.event-list div{padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc}.event-list strong{display:block;text-transform:capitalize}.event-list span{display:block;color:var(--muted);font-size:12px}.event-list p{margin:6px 0 0;color:#344054}",
     "@media(max-width:900px){.interview{grid-template-columns:1fr}.interview-side{position:static;grid-template-columns:1fr 1fr}.side-card:last-child{grid-column:1/-1}}",
-    "@media(max-width:760px){.topbar,.row,.job-card,.status-form{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid,.interview-side,.report-grid{grid-template-columns:1fr}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{font-size:32px}.question-title{font-size:30px}.question-kicker{display:grid}.timer-grid{grid-template-columns:1fr}}"
+    "@media(max-width:760px){.topbar,.row,.job-card,.status-form{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid,.interview-side,.report-grid,.rules-grid,.rules-admin-grid{grid-template-columns:1fr}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{font-size:32px}.question-title{font-size:30px}.question-kicker{display:grid}.timer-grid{grid-template-columns:1fr}}"
   ].join("");
 }

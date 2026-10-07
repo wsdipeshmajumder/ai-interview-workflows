@@ -6,6 +6,8 @@ It gives recruiters an admin panel, creates one Google Sheet tab per job, lets c
 
 Each JD has interview pacing variables in admin: minimum minutes, minimum questions, maximum questions, and passing score. The current default screen is 30 minutes minimum, 25-30 questions, and an 85/100 passing bar.
 
+Recruiters can also set candidate rules per JD, including whether AI/search/reference help is allowed, what tools or notes are permitted, and what behaviors are disallowed. These rules appear on the pre-interview screen before the timer starts.
+
 Candidates now see an untimed pre-interview lobby before the timed test begins. It explains expectations, runs a browser/network/resume check, and only then launches the interview timer. Candidate-facing completion never reveals the internal score; recruiter analysis stays in admin.
 
 Repeat attempts are blocked per job by candidate email. Recruiters can override this from the job's admin controls by enabling repeat attempts.
