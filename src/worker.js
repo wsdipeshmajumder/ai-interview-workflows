@@ -836,7 +836,7 @@ async function generateInterview(env, job, resumeText) {
     "RESUME:\n" + normalizeText(resumeText, 12000)
   ].join("\n\n");
   try {
-    const result = await openRouterJson(env, [
+    const result = await aiJson(env, [
       { role: "system", content: "You are an expert interviewer for AI workflow analyst roles. Return only valid JSON." },
       { role: "user", content: prompt }
     ], 0.35);
@@ -872,7 +872,7 @@ async function evaluateInterview(env, job, state) {
     "Q AND A:\n" + JSON.stringify(state.answers)
   ].join("\n\n");
   try {
-    const result = await openRouterJson(env, [
+    const result = await aiJson(env, [
       { role: "system", content: "You are a strict but fair AI interview evaluator. Return only valid JSON." },
       { role: "user", content: prompt }
     ], 0.2);
@@ -888,6 +888,31 @@ async function evaluateInterview(env, job, state) {
   } catch (_) {
     return fallbackEvaluation(job, state);
   }
+}
+
+async function aiJson(env, messages, temperature) {
+  if (env.OPENAI_API_KEY) return openAiJson(env, messages, temperature);
+  return openRouterJson(env, messages, temperature);
+}
+
+async function openAiJson(env, messages, temperature) {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: "Bearer " + env.OPENAI_API_KEY,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: env.OPENAI_MODEL || "gpt-4o-mini",
+      messages: messages,
+      temperature: temperature,
+      response_format: { type: "json_object" }
+    })
+  });
+  if (!response.ok) throw new Error("OpenAI " + response.status + ": " + (await response.text()).slice(0, 220));
+  const data = await response.json();
+  const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+  return parseJsonObject(content || "");
 }
 
 async function openRouterJson(env, messages, temperature) {
@@ -943,7 +968,7 @@ function fallbackEvaluation(job, state) {
   return {
     score: score,
     recommendation: score >= 70 ? "Maybe" : "Needs human review",
-    summary: "Fallback score for " + job.title + ". OpenRouter evaluation was unavailable, so use this only as a screening aid.",
+    summary: "Fallback score for " + job.title + ". AI evaluation was unavailable, so use this only as a screening aid.",
     strengths: ["Candidate completed the AI interview."],
     risks: ["AI scoring model was unavailable; human review is required."],
     followUpQuestions: ["Validate the candidate's answers in the human round."],

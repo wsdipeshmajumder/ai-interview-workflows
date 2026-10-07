@@ -7,6 +7,7 @@ workers_dev = true
 APP_NAME = "AI Interview Workflows"
 APP_URL = "https://ai-interview-workflows.wsipl.workers.dev"
 ADMIN_USER = "admin"
+OPENAI_MODEL = "gpt-4o-mini"
 OPENROUTER_MODEL = "openai/gpt-4o-mini"
 GOOGLE_SHEET_ID = "1aW0_18-qqExMoqwJw11kVoNe5ajsXmkaHULrQcC1VQo"
 DEFAULT_MARKET_CONTEXT = "AI workflow analyst screening should emphasize LLM output evaluation, prompt testing, CRM and pre-sales workflow QA, customer success automation review, finance data validation, spreadsheet discipline, privacy awareness, and clear issue documentation for engineering teams."
@@ -18,6 +19,7 @@ id = "549ede9efb594654b20db13516b21f66"
 # Set these as Cloudflare Worker secrets, not here:
 # wrangler secret put ADMIN_PASSWORD
 # wrangler secret put SESSION_SECRET
+# wrangler secret put OPENAI_API_KEY
 # wrangler secret put OPENROUTER_API_KEY
 # wrangler secret put GOOGLE_SERVICE_ACCOUNT_EMAIL
 # wrangler secret put GOOGLE_PRIVATE_KEY

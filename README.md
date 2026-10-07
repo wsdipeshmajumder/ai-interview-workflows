@@ -20,6 +20,7 @@ Live app:
 
    ADMIN_PASSWORD=admin
    SESSION_SECRET=replace-with-a-long-random-string
+   OPENAI_API_KEY=your-openai-key
    OPENROUTER_API_KEY=your-openrouter-key
    GOOGLE_SERVICE_ACCOUNT_EMAIL=your-service-account@project.iam.gserviceaccount.com
    GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
@@ -44,6 +45,7 @@ Set these in Cloudflare Workers:
 
    wrangler secret put ADMIN_PASSWORD
    wrangler secret put SESSION_SECRET
+   wrangler secret put OPENAI_API_KEY
    wrangler secret put OPENROUTER_API_KEY
    wrangler secret put GOOGLE_SERVICE_ACCOUNT_EMAIL
    wrangler secret put GOOGLE_PRIVATE_KEY
