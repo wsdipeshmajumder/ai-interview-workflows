@@ -33,7 +33,10 @@ const APPLICATION_HEADER = [
   "fit_criteria",
   "follow_up_questions",
   "answers_json",
-  "resume_text"
+  "resume_text",
+  "candidate_id",
+  "integrity_risk",
+  "integrity_events_json"
 ];
 
 const MIN_INTERVIEW_MINUTES = 30;
@@ -58,7 +61,8 @@ const SAMPLE_JD = [
 
 const memory = {
   jobs: null,
-  applications: []
+  applications: [],
+  pending: {}
 };
 
 let cachedGoogleToken = null;
@@ -83,6 +87,7 @@ async function route(request, env) {
   if (path === "/health" && method === "GET") {
     return json({ ok: true, storage: storageMode(env) });
   }
+  if (path === "/start/wsipl" && method === "GET") return preInterviewByCandidateUrl(request, env);
   if (path === "/jobs" && method === "GET") return listJobsPage(env);
   if (path.startsWith("/jobs/") && method === "GET") return jobDetailPage(env, path.split("/")[2]);
   if (path.startsWith("/jobs/") && path.endsWith("/start") && method === "POST") {
@@ -164,9 +169,11 @@ async function startInterview(request, env, jobId) {
     return html(layout(env, job.title, jobDetailView(job, duplicateAttemptMessage(candidate))), 409);
   }
 
+  const candidateId = uuid();
   const pending = {
-    id: id("prep"),
+    id: candidateId,
     type: "preflight",
+    candidateId: candidateId,
     jobId: job.id,
     candidate: candidate,
     resumeFileName: resumeFile && resumeFile.name ? String(resumeFile.name).slice(0, 160) : "resume",
@@ -178,6 +185,21 @@ async function startInterview(request, env, jobId) {
     allowRetakes: settings.allowRetakes,
     createdAt: new Date().toISOString()
   };
+  await savePendingCandidate(env, pending);
+  return redirect("/start/wsipl?candidate=" + encodeURIComponent(candidateId) + "&ping=ok");
+}
+
+async function preInterviewByCandidateUrl(request, env) {
+  const url = new URL(request.url);
+  const candidateId = clean(url.searchParams.get("candidate"));
+  const pending = await readPendingCandidate(env, candidateId);
+  if (!pending || pending.type !== "preflight") return html(layout(env, "Expired", errorView("This candidate test link is unavailable. Please start again from the opening link.")), 404);
+  const job = await getJob(env, pending.jobId);
+  if (!job || job.status !== "active") return html(layout(env, "Unavailable", errorView("Opening unavailable.")), 404);
+  const settings = interviewSettings(job, pending);
+  if (!settings.allowRetakes && await hasPriorApplication(env, job, pending.candidate)) {
+    return html(layout(env, job.title, jobDetailView(job, duplicateAttemptMessage(pending.candidate))), 409);
+  }
   const token = await createSignedToken(env, pending);
   return html(layout(env, "Before interview", preInterviewView(job, pending, token)));
 }
@@ -208,8 +230,10 @@ async function launchInterview(request, env) {
     maxQuestions: settings.maxQuestions,
     passingScore: settings.passingScore,
     allowRetakes: settings.allowRetakes,
+    candidateId: pending.candidateId || pending.id,
     index: 0,
     answers: [],
+    integrityEvents: [],
     startedAt: new Date().toISOString(),
     aiNote: interview.note || ""
   };
@@ -220,21 +244,27 @@ async function launchInterview(request, env) {
 async function answerInterview(request, env) {
   const form = await request.formData();
   const token = clean(form.get("token"));
-  const answer = normalizeText(form.get("answer") || "", 6000);
   const state = await verifySignedToken(env, token);
   if (!state) return html(layout(env, "Expired", errorView("This interview session expired. Please start again.")), 400);
   const job = await getJob(env, state.jobId);
   if (!job) return html(layout(env, "Unavailable", errorView("Opening unavailable.")), 404);
+  mergeIntegrityEvents(state, form.get("integrityEvents"));
+  const question = state.questions[state.index];
+  let answer = normalizeText(form.get("answer") || "", 6000);
+  const answerNote = normalizeText(form.get("answerNote") || "", 2000);
+  if (isMcq(question) && answerNote) answer = answer + "\nReasoning: " + answerNote;
   if (!answer) {
     const sameToken = await createSignedToken(env, state);
     return html(layout(env, "Interview", interviewView(job, state, sameToken, "Please enter an answer before continuing.")), 400);
   }
 
-  const question = state.questions[state.index];
   state.answers[state.index] = {
     question: question.question,
     competency: question.competency,
     complexity: question.complexity,
+    type: question.type || "free_text",
+    options: question.options || [],
+    correctOption: question.correctOption || "",
     answer: answer,
     answeredAt: new Date().toISOString()
   };
@@ -257,9 +287,12 @@ async function answerInterview(request, env) {
     id: id("app"),
     jobId: job.id,
     candidate: state.candidate,
+    candidateId: state.candidateId || "",
     resumeFileName: state.resumeFileName,
     resumeText: state.resumeText,
     answers: state.answers,
+    integrityEvents: state.integrityEvents || [],
+    integrityRisk: integrityRiskLabel(state.integrityEvents || []),
     evaluation: evaluation,
     startedAt: state.startedAt,
     submittedAt: new Date().toISOString()
@@ -439,6 +472,7 @@ function preInterviewView(job, pending, token) {
     "<div class=\"logo-strip\">" + logoMarkup("surface-logo") + "</div>",
     "<p class=\"eyebrow\">Before you begin</p>",
     "<h1>" + escapeHtml(job.title) + "</h1>",
+    "<p class=\"candidate-id\">Candidate ID: <strong>" + escapeHtml(pending.candidateId || pending.id || "") + "</strong></p>",
     "<p class=\"lead\">This interview will take at least " + escapeHtml(settings.minMinutes) + " minutes. Each question is paced, and you can answer by typing. Keep this tab open and do not refresh during the interview.</p>",
     "</div>",
     "<div class=\"preflight-grid\">",
@@ -449,6 +483,7 @@ function preInterviewView(job, pending, token) {
     "<li>" + escapeHtml(questionRangeText(settings)) + " across baseline, intermediate, advanced, and pressure-test questions.</li>",
     "<li>Questions are based on your resume, the JD, and current AI workflow expectations.</li>",
     "<li>Answer with concrete examples, metrics, tools, tradeoffs, and failure cases. Generic answers are scored strictly.</li>",
+    "<li>Tab switching, focus loss, refresh attempts, and copy/paste attempts are logged for recruiter review.</li>",
     "<li>You cannot see the internal score after submission. The recruiter will review the AI analysis and get back to you.</li>",
     "</ul>",
     "<div class=\"topic-box\"><strong>You will be interviewed on these topics</strong><div class=\"topic-list\">" + topics + "</div></div>",
@@ -541,7 +576,8 @@ function interviewView(job, state, token, message) {
     "<p class=\"muted question-meta\">" + escapeHtml(question.competency || "Interview signal") + " · " + escapeHtml(question.complexity || "mixed") + " · suggested " + escapeHtml(question.timeBoxMinutes || 1) + " min</p>",
     "<form id=\"answerForm\" method=\"post\" action=\"/interview/answer\" class=\"form\">",
     "<input type=\"hidden\" name=\"token\" value=\"" + escapeHtml(token) + "\">",
-    "<label>Your answer<textarea name=\"answer\" rows=\"9\" required autofocus></textarea></label>",
+    "<input id=\"integrityEvents\" type=\"hidden\" name=\"integrityEvents\" value=\"[]\">",
+    renderAnswerControl(question),
     "<button id=\"answerButton\" class=\"button\" type=\"submit\" " + (isFinal && remainingSeconds > 0 ? "disabled" : "") + ">" + (isFinal ? "Submit interview" : "Next question") + "</button>",
     "</form>",
     "</div>",
@@ -559,6 +595,10 @@ function interviewView(job, state, token, message) {
     "<div class=\"side-card\">",
     "<p class=\"eyebrow\">Answer quality</p>",
     "<p class=\"hint\">Use concrete examples, data, tools, decisions, failure cases, and tradeoffs. Generic answers are scored strictly.</p>",
+    "</div>",
+    "<div class=\"side-card integrity-card\">",
+    "<p class=\"eyebrow\">Integrity monitor</p>",
+    "<p id=\"integrityStatus\" class=\"hint\">Tab focus, copy/paste, and refresh signals are logged for recruiter review.</p>",
     "</div>",
     "</aside>",
     "</section>",
@@ -600,6 +640,33 @@ function mermaidScript() {
   ].join("");
 }
 
+function renderAnswerControl(question) {
+  if (!isMcq(question)) {
+    return "<label>Your answer<textarea name=\"answer\" rows=\"9\" required autofocus></textarea></label>";
+  }
+  const options = (question.options || []).map(function(option, index) {
+    const value = clean(option);
+    const letter = String.fromCharCode(65 + index);
+    return [
+      "<label class=\"mcq-option\">",
+      "<input type=\"radio\" name=\"answer\" value=\"" + escapeHtml(letter + ". " + value) + "\" required" + (index === 0 ? " autofocus" : "") + ">",
+      "<span><strong>" + letter + ".</strong> " + escapeHtml(value) + "</span>",
+      "</label>"
+    ].join("");
+  }).join("");
+  return [
+    "<fieldset class=\"mcq-field\">",
+    "<legend>Select the best answer</legend>",
+    options,
+    "</fieldset>",
+    "<label>Brief reasoning<textarea name=\"answerNote\" rows=\"4\" required placeholder=\"Explain why this option is best and what risk you considered.\"></textarea></label>"
+  ].join("");
+}
+
+function isMcq(question) {
+  return question && question.type === "mcq" && Array.isArray(question.options) && question.options.length >= 2;
+}
+
 function interviewRuntimeScript(startedAt, endAt, isFinal) {
   return [
     "<script>",
@@ -611,11 +678,23 @@ function interviewRuntimeScript(startedAt, endAt, isFinal) {
     "var elapsed=document.getElementById('elapsedTimer');",
     "var remaining=document.getElementById('remainingTimer');",
     "var status=document.getElementById('timerStatus');",
+    "var integrityInput=document.getElementById('integrityEvents');",
+    "var integrityStatus=document.getElementById('integrityStatus');",
+    "var integrityEvents=[];",
+    "var submitting=false;",
     "var isFinal=" + JSON.stringify(Boolean(isFinal)) + ";",
+    "function recordIntegrity(type,detail){var event={type:type,detail:detail||'',at:new Date().toISOString()};integrityEvents.push(event);if(integrityEvents.length>80){integrityEvents=integrityEvents.slice(-80);}integrityInput.value=JSON.stringify(integrityEvents);if(integrityStatus){integrityStatus.textContent='Integrity signal logged: '+type.replace(/_/g,' ')+'.';}}",
     "function fmt(seconds){var m=Math.floor(seconds/60);var s=seconds%60;return m+':'+String(s).padStart(2,'0');}",
     "function tick(){var now=Date.now();var elapsedSeconds=Math.max(0,Math.floor((now-startedAt)/1000));var remainingSeconds=Math.max(0,Math.ceil((endAt-now)/1000));elapsed.textContent=fmt(elapsedSeconds);remaining.textContent=remainingSeconds>0?fmt(remainingSeconds):'met';if(remainingSeconds>0){status.textContent='Minimum time remaining: '+fmt(remainingSeconds)+'. Keep answering carefully.';if(isFinal){button.disabled=true;}}else{status.textContent='Minimum interview time met. You can submit once you finish the questions.';if(isFinal){button.disabled=false;clearInterval(timer);}}}",
     "var timer=setInterval(tick,1000);tick();",
-    "form.addEventListener('submit',function(){button.disabled=true;button.textContent=isFinal?'Submitting...':'Saving answer...';});",
+    "document.addEventListener('visibilitychange',function(){if(document.hidden){recordIntegrity('tab_hidden','Candidate left the test tab');}});",
+    "window.addEventListener('blur',function(){recordIntegrity('window_blur','Browser window lost focus');});",
+    "document.addEventListener('paste',function(event){event.preventDefault();recordIntegrity('paste_blocked','Paste attempt blocked');});",
+    "document.addEventListener('copy',function(event){recordIntegrity('copy_attempt','Copy attempt detected');});",
+    "document.addEventListener('cut',function(event){event.preventDefault();recordIntegrity('cut_blocked','Cut attempt blocked');});",
+    "document.addEventListener('contextmenu',function(event){event.preventDefault();recordIntegrity('context_menu_blocked','Right-click menu blocked');});",
+    "window.addEventListener('beforeunload',function(event){if(submitting){return;}recordIntegrity('page_unload','Refresh or navigation attempt');event.preventDefault();event.returnValue='';});",
+    "form.addEventListener('submit',function(){submitting=true;button.disabled=true;button.textContent=isFinal?'Submitting...':'Saving answer...';});",
     "})();",
     "</script>"
   ].join("");
@@ -699,8 +778,10 @@ function adminJobView(job, applications) {
       "<td>" + escapeHtml(application.candidate.name || "") + "</td>",
       "<td>" + escapeHtml(application.candidate.email || "") + "</td>",
       "<td>" + escapeHtml(application.candidate.phone || "") + "</td>",
+      "<td>" + escapeHtml(application.candidateId || "") + "</td>",
       "<td><strong>" + escapeHtml(ev.score || "") + "</strong></td>",
       "<td>" + escapeHtml(ev.recommendation || "") + "</td>",
+      "<td><span class=\"pill risk-" + escapeHtml(String(application.integrityRisk || "Clear").toLowerCase()) + "\">" + escapeHtml(application.integrityRisk || "Clear") + "</span> " + escapeHtml(integritySummary(application.integrityEvents || [])) + "</td>",
       "<td>" + escapeHtml(ev.summary || "") + "</td>",
       "<td>" + escapeHtml(compactList(ev.good || ev.strengths)) + "</td>",
       "<td>" + escapeHtml(compactList(ev.bad || ev.risks)) + "</td>",
@@ -732,8 +813,8 @@ function adminJobView(job, applications) {
     "</form>",
     "</section>",
     "<section class=\"section-gap\"><h2>Candidates</h2><div class=\"table-wrap\"><table>",
-    "<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>AI score</th><th>Recommendation</th><th>Summary</th><th>Good</th><th>Bad</th><th>Fit criteria</th><th>Submitted</th></tr></thead>",
-    "<tbody>" + (rows || "<tr><td colspan=\"10\">No candidates yet.</td></tr>") + "</tbody>",
+    "<thead><tr><th>Name</th><th>Email</th><th>Phone</th><th>Candidate ID</th><th>AI score</th><th>Recommendation</th><th>Integrity</th><th>Summary</th><th>Good</th><th>Bad</th><th>Fit criteria</th><th>Submitted</th></tr></thead>",
+    "<tbody>" + (rows || "<tr><td colspan=\"12\">No candidates yet.</td></tr>") + "</tbody>",
     "</table></div></section>"
   ].join("");
 }
@@ -750,6 +831,18 @@ function compactFitCriteria(items) {
   if (!Array.isArray(items)) return "";
   return items.slice(0, 4).map(function(item) {
     return clean(item.criterion || "") + ": " + (item.met ? "met" : "not met") + (item.evidence ? " (" + clean(item.evidence) + ")" : "");
+  }).join(" | ");
+}
+
+function integritySummary(events) {
+  if (!Array.isArray(events) || !events.length) return "No signals";
+  const counts = {};
+  events.forEach(function(event) {
+    const type = clean(event && event.type) || "event";
+    counts[type] = (counts[type] || 0) + 1;
+  });
+  return Object.keys(counts).slice(0, 4).map(function(type) {
+    return type.replace(/_/g, " ") + ": " + counts[type];
   }).join(" | ");
 }
 
@@ -868,7 +961,7 @@ async function readApplications(env, job) {
     return readFallbackApplications(env, job.id);
   }
   await ensureApplicationSheet(env, job.sheetTitle);
-  const rows = await valuesGet(env, quoteSheet(job.sheetTitle) + "!A2:Q");
+  const rows = await valuesGet(env, quoteSheet(job.sheetTitle) + "!A2:T");
   return rows.filter(function(row) {
     return row[1];
   }).map(function(row) {
@@ -894,7 +987,10 @@ async function readApplications(env, job) {
         followUpQuestions: splitList(row[14])
       },
       answers: safeJson(row[15], []),
-      resumeText: row[16] || ""
+      resumeText: row[16] || "",
+      candidateId: row[17] || "",
+      integrityRisk: row[18] || "",
+      integrityEvents: safeJson(row[19], [])
     };
   }).sort(function(a, b) {
     return String(b.submittedAt).localeCompare(String(a.submittedAt));
@@ -969,6 +1065,22 @@ async function writeFallbackApplications(env, jobId, applications) {
     return app.jobId !== jobId;
   }).concat(applications);
   if (env.AI_INTERVIEW_KV) await env.AI_INTERVIEW_KV.put("applications:" + jobId, JSON.stringify(applications));
+}
+
+async function savePendingCandidate(env, pending) {
+  memory.pending[pending.candidateId] = pending;
+  if (env.AI_INTERVIEW_KV) {
+    await env.AI_INTERVIEW_KV.put("pending:" + pending.candidateId, JSON.stringify(pending), { expirationTtl: 86400 });
+  }
+}
+
+async function readPendingCandidate(env, candidateId) {
+  if (!candidateId) return null;
+  if (env.AI_INTERVIEW_KV) {
+    const stored = await env.AI_INTERVIEW_KV.get("pending:" + candidateId, "json");
+    if (stored) return stored;
+  }
+  return memory.pending[candidateId] || null;
 }
 
 function memoryJobs() {
@@ -1053,7 +1165,10 @@ function applicationToRow(application) {
     JSON.stringify(evaluation.fitCriteria || []),
     listCell(evaluation.followUpQuestions),
     JSON.stringify(application.answers || []),
-    normalizeText(application.resumeText || "", 12000)
+    normalizeText(application.resumeText || "", 12000),
+    application.candidateId || "",
+    application.integrityRisk || integrityRiskLabel(application.integrityEvents || []),
+    JSON.stringify(application.integrityEvents || [])
   ];
 }
 
@@ -1275,11 +1390,12 @@ async function generateInterview(env, job, resumeText) {
     "Use the job description, resume, and market context together.",
     "The interview must be difficult, deeply probing, and designed to reveal weak fit quickly through job-related evidence.",
     "Mix resume-specific probes, JD-specific scenarios, compliance checks, data-quality cases, workflow judgment, failure analysis, quantified rubric design, and job-related disqualification traps based on real operational mistakes.",
+    "Use a mixed assessment format: about 30 percent multiple-choice questions and 70 percent written scenario questions. MCQs must test judgment, not trivia, and should still require reasoning in the UI.",
     "Use differing complexities: baseline evidence checks, intermediate workflow diagnosis, advanced incident/rubric design, and stress questions that test judgment under pressure.",
     "For workflow, data-quality, compliance, support, CRM, or finance scenario questions, include a concise Mermaid flowchart in diagramMermaid where it helps test process judgment. Use diagramMermaid on about 5 questions, not every question.",
     "Ask for concrete examples, metrics, edge cases, evidence, and tradeoffs. Avoid trivia, personal questions, or discriminatory questions.",
     "Return only JSON with this shape:",
-    "{\"estimatedMinutes\":number,\"questions\":[{\"question\":\"string\",\"competency\":\"string\",\"complexity\":\"baseline|intermediate|advanced|stress\",\"expectedSignals\":\"string\",\"timeBoxMinutes\":number,\"diagramMermaid\":\"optional mermaid flowchart string\"}]}",
+    "{\"estimatedMinutes\":number,\"questions\":[{\"type\":\"free_text|mcq\",\"question\":\"string\",\"options\":[\"string\"],\"correctOption\":\"A|B|C|D\",\"competency\":\"string\",\"complexity\":\"baseline|intermediate|advanced|stress\",\"expectedSignals\":\"string\",\"timeBoxMinutes\":number,\"diagramMermaid\":\"optional mermaid flowchart string\"}]}",
     "Return " + settings.targetQuestions + " questions. Never return fewer than " + settings.minQuestions + " or more than " + settings.maxQuestions + ".",
     "Pace the questions for a minimum " + settings.minMinutes + " minute interview. Keep questions concise but demanding.",
     "The passing bar is " + settings.passingScore + "/100. The interview should make passing difficult unless the candidate gives specific, verifiable, operationally strong answers.",
@@ -1312,6 +1428,7 @@ async function evaluateInterview(env, job, state) {
     "Evaluate this candidate for the role.",
     "Score only from the resume and answers. Be strict, fair, evidence-based, and selective.",
     "Default to disqualifying weak, generic, evasive, or unverifiable answers. Reward specific operational evidence, measurable QA discipline, privacy judgment, and ability to translate failures into engineering feedback.",
+    "For MCQ answers, check the selected option against the question's correctOption and also evaluate the candidate's reasoning. Wrong MCQ choices on role-critical controls should materially reduce the score.",
     "Hire/Strong Hire is a pass. Maybe/No Hire is not a pass.",
     "Return only JSON with this shape:",
     "{\"score\":number,\"recommendation\":\"Strong Hire|Hire|Maybe|No Hire\",\"summary\":\"string\",\"good\":[\"string\"],\"bad\":[\"string\"],\"fitCriteria\":[{\"criterion\":\"string\",\"met\":boolean,\"evidence\":\"string\"}],\"strengths\":[\"string\"],\"risks\":[\"string\"],\"followUpQuestions\":[\"string\"],\"rubric\":[{\"area\":\"string\",\"score\":number,\"comment\":\"string\"}]}",
@@ -1321,7 +1438,8 @@ async function evaluateInterview(env, job, state) {
     "JD:\n" + normalizeText(job.jd, 9000),
     "MARKET CONTEXT:\n" + normalizeText(job.marketContext || env.DEFAULT_MARKET_CONTEXT || "", 3000),
     "RESUME:\n" + normalizeText(state.resumeText, 10000),
-    "Q AND A:\n" + JSON.stringify(state.answers)
+    "Q AND A:\n" + JSON.stringify(state.answers),
+    "INTEGRITY EVENTS:\n" + JSON.stringify(state.integrityEvents || [])
   ].join("\n\n");
   try {
     const result = await aiJson(env, [
@@ -1424,8 +1542,13 @@ async function openRouterJson(env, messages, temperature) {
 
 function normalizeInterviewQuestions(rawQuestions, settings, job) {
   const cleaned = rawQuestions.map(function(q) {
+    const options = Array.isArray(q.options) ? q.options.map(clean).filter(Boolean).slice(0, 5) : [];
+    const type = normalizeQuestionType(q.type, options);
     return {
+      type: type,
       question: clean(q.question),
+      options: type === "mcq" ? options : [],
+      correctOption: type === "mcq" ? clean(q.correctOption || "").slice(0, 1).toUpperCase() : "",
       competency: clean(q.competency || "Interview signal"),
       complexity: normalizeComplexity(q.complexity),
       expectedSignals: clean(q.expectedSignals || ""),
@@ -1483,11 +1606,45 @@ function normalizeComplexity(value) {
   return ["baseline", "intermediate", "advanced", "stress"].indexOf(normalized) === -1 ? "intermediate" : normalized;
 }
 
+function normalizeQuestionType(value, options) {
+  const normalized = clean(value || "").toLowerCase();
+  return normalized === "mcq" && Array.isArray(options) && options.length >= 2 ? "mcq" : "free_text";
+}
+
 function normalizeMermaid(value) {
   const diagram = normalizeText(value || "", 1600);
   if (!diagram) return "";
   if (!/^(flowchart|graph|sequenceDiagram|stateDiagram|journey|timeline)\b/i.test(diagram)) return "";
   return diagram;
+}
+
+function mergeIntegrityEvents(state, rawEvents) {
+  const existing = Array.isArray(state.integrityEvents) ? state.integrityEvents : [];
+  let incoming = [];
+  try {
+    const parsed = JSON.parse(rawEvents || "[]");
+    incoming = Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    incoming = [];
+  }
+  const normalized = incoming.map(function(event) {
+    return {
+      type: clean(event && event.type).slice(0, 80),
+      detail: clean(event && event.detail).slice(0, 160),
+      at: clean(event && event.at).slice(0, 40)
+    };
+  }).filter(function(event) {
+    return event.type;
+  });
+  state.integrityEvents = existing.concat(normalized).slice(-200);
+}
+
+function integrityRiskLabel(events) {
+  const count = Array.isArray(events) ? events.length : 0;
+  if (count >= 8) return "High";
+  if (count >= 3) return "Medium";
+  if (count > 0) return "Low";
+  return "Clear";
 }
 
 function fallbackInterview(job) {
@@ -1516,15 +1673,15 @@ function fallbackQuestionPool(job) {
     { question: "Walk me through the strongest evidence that your past work maps to " + title + ". Avoid generalities; give tools, volume, error rates, and outcomes.", competency: "Resume evidence", complexity: "baseline", expectedSignals: "Specific metrics, named workflows, honest scope, measurable outcomes." },
     { question: "Which part of the JD is closest to work you have actually done, and which part is weakest for you? Give evidence for both.", competency: "Role fit honesty", complexity: "baseline", expectedSignals: "Self-awareness, concrete examples, and no inflated claims." },
     { question: "Explain how you would audit one AI-generated answer for factual accuracy, contextual relevance, tone, and business risk.", competency: "AI output evaluation", complexity: "baseline", expectedSignals: "Source checks, rubric criteria, severity labels, and repeatability." },
-    { question: "Design a scoring rubric for AI-generated customer support responses. What errors are automatic failures?", competency: "Rubric design", complexity: "intermediate", expectedSignals: "Objective criteria, severe error classes, source checks, escalation rules." },
+    { type: "mcq", question: "An AI-generated support response is polite and fluent but includes one unsupported refund promise. What is the correct QA decision?", options: ["Pass because tone and grammar are strong", "Fail or escalate because unsupported commitments are business-risk defects", "Pass if the customer sounds upset", "Ignore it if the model confidence is high"], correctOption: "B", competency: "Rubric design", complexity: "intermediate", expectedSignals: "Recognizes disqualifying business-risk defects over surface fluency." },
     { question: "Review the CRM enrichment workflow shown below. Where can silent bad data enter, what controls would you add, and how would you prove the fix worked?", competency: "Data quality incident response", complexity: "advanced", expectedSignals: "Sampling, source comparison, rollback, audit logs, measurable validation.", diagramMermaid: "flowchart LR\nA[Lead record] --> B[AI enrichment]\nB --> C[CRM update]\nC --> D[Sales queue]\nB --> E[Confidence score]\nE --> F{Below threshold?}\nF -- Yes --> G[Human review]\nF -- No --> C" },
     { question: "Use the finance extraction diagram below. Identify the highest-risk handoff, the control you would insert, and the evidence needed before reporting.", competency: "Financial validation", complexity: "advanced", expectedSignals: "Reconciliation, source evidence, approval thresholds, exception handling.", diagramMermaid: "flowchart TD\nA[Invoice PDF] --> B[AI field extraction]\nB --> C[Bookkeeping category]\nC --> D[Monthly report]\nB --> E[Exception queue]\nE --> F[Human validation]\nF --> D" },
     { question: "Show how you would improve a weak prompt for lead scoring or outreach drafting. What test set would prove improvement?", competency: "Prompt testing", complexity: "intermediate", expectedSignals: "Before/after thinking, test cases, false positives, performance metrics." },
     { question: "A model gives a confident but false summary of a client onboarding call. Use the diagram to explain what you would log for engineering and where you would add a stop-check.", competency: "Failure documentation", complexity: "intermediate", expectedSignals: "Inputs, expected vs actual, reproduction, frequency, severity, business impact.", diagramMermaid: "flowchart LR\nA[Call transcript] --> B[AI summary]\nB --> C[CSM notes]\nC --> D[Client onboarding plan]\nB --> E[QA sample]\nE --> F{False claim?}\nF -- Yes --> G[Bug report]" },
-    { question: "What data should never be sent into an AI workflow without controls, and what controls are non-negotiable?", competency: "Privacy and governance", complexity: "baseline", expectedSignals: "PII handling, masking, retention, consent, least privilege, access control." },
+    { type: "mcq", question: "A workflow sends raw customer emails, invoices, and phone numbers to an AI tool for enrichment. Which control is most important before production use?", options: ["Increase the model temperature so outputs are varied", "Mask or minimize sensitive data and enforce access/retention controls", "Ask reviewers to delete bad outputs manually", "Only run the workflow after business hours"], correctOption: "B", competency: "Privacy and governance", complexity: "baseline", expectedSignals: "Prioritizes PII minimization, retention, access, and governance controls." },
     { question: "You have 500 AI outputs to rank by quality today. Based on the diagram, explain your batching, sampling, labeling, and reviewer calibration process.", competency: "High-volume execution", complexity: "advanced", expectedSignals: "Batching, inter-rater checks, examples, fatigue controls, consistency.", diagramMermaid: "flowchart TD\nA[500 AI outputs] --> B[Batch by workflow]\nB --> C[Gold-set calibration]\nC --> D[Reviewer labeling]\nD --> E[Disagreement review]\nE --> F[Final ranked set]\nE --> C" },
     { question: "Tell me about a time you found a systematic process error. What did you do after identifying it?", competency: "Operational ownership", complexity: "baseline", expectedSignals: "Root cause, stakeholder communication, durable fix, measured improvement." },
-    { question: "Where would you draw the line between analyst responsibility and engineering responsibility in an AI workflow failure?", competency: "Bridge operations and tech", complexity: "intermediate", expectedSignals: "Clear handoff, evidence quality, prioritization, collaboration boundaries." },
+    { type: "mcq", question: "A repeated AI failure is reproducible with three examples and clear business impact. What should the analyst send engineering first?", options: ["A vague message saying the AI is bad", "Full production access for all reviewers", "Reproduction steps, inputs, expected versus actual outputs, frequency, severity, and impact", "Only screenshots without source records"], correctOption: "C", competency: "Bridge operations and tech", complexity: "intermediate", expectedSignals: "Understands actionable engineering handoff evidence." },
     { question: "If your manager asks you to approve outputs you have not validated because the offer deadline is today, what do you do?", competency: "Integrity under pressure", complexity: "stress", expectedSignals: "Risk framing, escalation, partial approval boundaries, refusal when needed." },
     { question: "Take one AI workflow from the JD and define five measurable quality benchmarks for it.", competency: "Quality benchmark design", complexity: "intermediate", expectedSignals: "Measurable metrics, thresholds, sample design, and operational ROI." },
     { question: "A sales leader complains that AI outreach drafts sound polished but do not convert. What evidence do you collect before changing the workflow?", competency: "Sales workflow diagnosis", complexity: "advanced", expectedSignals: "Conversion data, segmentation, message quality, CRM fields, and test design." },
@@ -1538,10 +1695,10 @@ function fallbackQuestionPool(job) {
     { question: "You discover that an AI workflow improves speed but increases compliance risk. What recommendation do you make?", competency: "Risk tradeoff", complexity: "stress", expectedSignals: "Stop/go criteria, mitigation, stakeholder framing, and governance." },
     { question: "Name three edge cases for automated lead scoring and how each should be represented in a test set.", competency: "Edge-case coverage", complexity: "intermediate", expectedSignals: "Concrete edge cases, expected outcomes, and regression testing." },
     { question: "Describe a one-day audit plan for the sales, support, and finance AI workflows shown below. What do you inspect first and why?", competency: "Execution planning", complexity: "advanced", expectedSignals: "Prioritization, data access, sampling, stakeholders, and first deliverables.", diagramMermaid: "flowchart TD\nA[Business inputs] --> B[Sales AI workflow]\nA --> C[Support AI workflow]\nA --> D[Finance AI workflow]\nB --> E[CRM actions]\nC --> F[Customer notes]\nD --> G[Reports]\nE --> H[QA dashboard]\nF --> H\nG --> H" },
-    { question: "If the model and source system disagree, what is your source-of-truth policy?", competency: "Source discipline", complexity: "baseline", expectedSignals: "Primary records, auditability, escalation, and documentation." },
+    { type: "mcq", question: "If the model output and source system disagree, what is the safest source-of-truth policy?", options: ["Trust the AI if it sounds confident", "Trust the newest-looking value", "Use the authoritative source record, document the mismatch, and escalate if the workflow keeps disagreeing", "Average both values"], correctOption: "C", competency: "Source discipline", complexity: "baseline", expectedSignals: "Uses authoritative records and escalation instead of confidence or style." },
     { question: "What would make you disqualify an AI-generated customer success log even if it is grammatically perfect?", competency: "Disqualifying defects", complexity: "intermediate", expectedSignals: "Wrong facts, missing obligations, privacy leaks, unsupported claims, tone risk." },
     { question: "How would you measure whether prompt changes improved operational ROI rather than only making outputs sound better?", competency: "ROI measurement", complexity: "advanced", expectedSignals: "Baseline, controlled test, speed, accuracy, rework, conversion, support load." },
-    { question: "You have ten minutes before a same-day offer decision. What are the highest-signal checks you run on this candidate's answers?", competency: "Screening judgment", complexity: "stress", expectedSignals: "Evidence density, contradiction checks, role-critical criteria, and risk flags." },
+    { type: "mcq", question: "You have ten minutes before a same-day offer decision. Which signal should carry the most weight for this role?", options: ["Confident wording and long answers", "Evidence-backed examples with metrics, controls, and failure handling", "How quickly the candidate answered", "Whether they used popular AI buzzwords"], correctOption: "B", competency: "Screening judgment", complexity: "stress", expectedSignals: "Values evidence density and role-critical controls over style." },
     { question: "Give your first-week plan for this role, including what you would audit, what metrics you would define, and what would disqualify a workflow from automation.", competency: "Readiness and judgment", complexity: "advanced", expectedSignals: "Structured plan, quality benchmarks, workflow triage, practical priorities." }
   ];
 }
@@ -1659,6 +1816,18 @@ function id(prefix) {
     return byte.toString(16).padStart(2, "0");
   }).join("");
   return (prefix || "id") + "_" + value;
+}
+
+function uuid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes).map(function(byte) {
+    return byte.toString(16).padStart(2, "0");
+  }).join("");
+  return hex.slice(0, 8) + "-" + hex.slice(8, 12) + "-" + hex.slice(12, 16) + "-" + hex.slice(16, 20) + "-" + hex.slice(20);
 }
 
 function clean(value) {
@@ -1783,7 +1952,7 @@ function css() {
     "nav a,.ghost{color:var(--muted);text-decoration:none}.ghost{border:0;background:transparent;cursor:pointer;font:inherit;padding:0}",
     ".shell{width:min(1120px,calc(100% - 32px));margin:0 auto;padding:34px 0 56px}",
     ".page-head{margin-bottom:22px}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{margin:0 0 10px;font-size:clamp(28px,5vw,48px);line-height:1.03}",
-    ".page-head p,.complete p,.muted,.hint,.lead{color:var(--muted)}.lead{max-width:720px;font-size:18px;line-height:1.5}.hint{font-size:13px;line-height:1.4}.hint.bad{color:var(--warn)}",
+    ".page-head p,.complete p,.muted,.hint,.lead,.candidate-id{color:var(--muted)}.candidate-id{margin:0 0 12px}.lead{max-width:720px;font-size:18px;line-height:1.5}.hint{font-size:13px;line-height:1.4}.hint.bad{color:var(--warn)}",
     ".row{display:flex;align-items:center;justify-content:space-between;gap:20px}.stack{display:grid;gap:14px}",
     ".job-card,.panel,.auth,.interview,.complete,.wide{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(17,24,39,.05)}",
     ".job-card{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px}.job-card h2{margin:4px 0 6px;font-size:22px}",
@@ -1795,14 +1964,14 @@ function css() {
     ".form{display:grid;gap:16px}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}",
     "label{display:grid;gap:7px;color:#344054;font-size:14px;font-weight:700}",
     "input,textarea,select{width:100%;min-height:42px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:6px;background:white;color:var(--ink);font:inherit}input[type=checkbox]{width:auto;min-height:auto;padding:0}textarea{resize:vertical}",
-    "label.check{display:flex;align-items:center;gap:10px;min-height:42px}",
+    "label.check{display:flex;align-items:center;gap:10px;min-height:42px}.mcq-field{display:grid;gap:10px;margin:0;padding:0;border:0}.mcq-field legend{margin:0 0 4px;color:#344054;font-size:14px;font-weight:800}.mcq-option{display:flex;grid-template-columns:auto 1fr;align-items:flex-start;gap:10px;padding:12px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer}.mcq-option:hover{border-color:var(--brand);background:#f7fbfa}.mcq-option input{margin-top:4px}",
     "input:focus,textarea:focus,select:focus{outline:3px solid rgba(15,118,110,.18);border-color:var(--brand)}",
     ".jd{margin-top:18px;color:#344054;line-height:1.6}.jd.compact{max-height:300px;overflow:auto}",
     ".flash{margin:0 0 18px;padding:12px 14px;border:1px solid #fedf89;border-radius:6px;background:#fffaeb;color:#93370d}",
     ".progress{height:8px;border-radius:999px;overflow:hidden;background:#e6ebf2;margin-bottom:24px}.progress span{display:block;height:100%;background:var(--brand)}",
     ".clean-list{margin:0;padding-left:18px;color:#344054;line-height:1.65}.topic-box{margin-top:22px;padding:16px;border:1px solid #c8d1ff;border-radius:8px;background:#f4f6ff}.topic-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.topic-chip{display:inline-flex;align-items:center;min-height:34px;padding:6px 10px;border:1px solid #aab8ff;border-radius:6px;background:#eef1ff;color:#1d2939;font-weight:700}.diagram-panel{margin:18px 0;padding:14px;border:1px solid #c8d1ff;border-radius:8px;background:#f7f8ff}.diagram-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px;color:#475467;font-size:12px;font-weight:800;text-transform:uppercase}.mermaid{margin:0;overflow:auto;text-align:center;background:white;border:1px solid #e1e7f5;border-radius:6px;padding:12px}.checks{display:grid;gap:10px;margin:14px 0}.check-row{margin:0;padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc;color:#475467}.check-row.ok{border-color:#9dd4c9;background:#eefaf7;color:#115e59}.check-row.bad{border-color:#f6c7a7;background:#fff4ed;color:#93370d}.hidden{display:none}.next-card{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;text-align:left}.next-card p{margin:6px 0 0}",
     ".table-wrap{overflow-x:auto;background:white;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:13px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc;color:#475467;font-size:12px;text-transform:uppercase;letter-spacing:0}tr:last-child td{border-bottom:0}",
-    ".status-form{display:flex;gap:10px;align-items:center}.empty{padding:46px 0;text-align:center}.complete{max-width:680px;margin:8vh auto 0;text-align:center}.section-gap{margin-top:24px}.pill{display:inline-flex;padding:3px 8px;border-radius:999px;background:#eef6f5;color:#115e59;font-weight:800;font-size:12px}",
+    ".status-form{display:flex;gap:10px;align-items:center}.empty{padding:46px 0;text-align:center}.complete{max-width:680px;margin:8vh auto 0;text-align:center}.section-gap{margin-top:24px}.pill{display:inline-flex;padding:3px 8px;border-radius:999px;background:#eef6f5;color:#115e59;font-weight:800;font-size:12px}.risk-high{background:#fef3f2;color:#b42318}.risk-medium{background:#fff4ed;color:#c4320a}.risk-low{background:#fffaeb;color:#b54708}.risk-clear{background:#eef6f5;color:#115e59}",
     "@media(max-width:900px){.interview{grid-template-columns:1fr}.interview-side{position:static;grid-template-columns:1fr 1fr}.side-card:last-child{grid-column:1/-1}}",
     "@media(max-width:760px){.topbar,.row,.job-card,.status-form{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid,.interview-side{grid-template-columns:1fr}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{font-size:32px}.question-title{font-size:30px}.question-kicker{display:grid}.timer-grid{grid-template-columns:1fr}}"
   ].join("");
