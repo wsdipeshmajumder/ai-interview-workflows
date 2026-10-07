@@ -4,6 +4,8 @@ Cloudflare Worker MVP for AI-led candidate screening.
 
 It gives recruiters an admin panel, creates one Google Sheet tab per job, lets candidates upload or paste a resume, generates AI interview questions from resume plus JD plus market context, evaluates the answers, and logs the result.
 
+Each JD has interview pacing variables in admin: minimum minutes, minimum questions, maximum questions, and passing score. The current default screen is 30 minutes minimum, 25-30 questions, and an 85/100 passing bar.
+
 If Google Sheets secrets are not ready, the app stores data in Cloudflare KV when the AI_INTERVIEW_KV binding is configured.
 
 Live app:
