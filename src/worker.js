@@ -109,7 +109,8 @@ const SAMPLE_JD = [
 const memory = {
   jobs: null,
   applications: [],
-  pending: {}
+  pending: {},
+  activeInterviews: []
 };
 
 let cachedGoogleToken = null;
@@ -300,6 +301,7 @@ async function launchInterview(request, env) {
     startedAt: new Date().toISOString(),
     aiNote: interview.note || ""
   };
+  await upsertActiveInterview(env, job, state, "active");
   const interviewToken = await createSignedToken(env, state);
   return html(layout(env, "Interview", interviewView(job, state, interviewToken)));
 }
@@ -335,6 +337,7 @@ async function answerInterview(request, env) {
   state.index += 1;
 
   if (state.index < state.questions.length) {
+    await upsertActiveInterview(env, job, state, "active");
     const nextToken = await createSignedToken(env, state);
     return html(layout(env, "Interview", interviewView(job, state, nextToken)));
   }
@@ -342,6 +345,7 @@ async function answerInterview(request, env) {
   if (elapsedInterviewMinutes(state) < interviewMinutes(job, state)) {
     state.extraProbeCount = Number(state.extraProbeCount || 0) + 1;
     state.questions.push(extraProbeQuestion(state.extraProbeCount));
+    await upsertActiveInterview(env, job, state, "active");
     const nextToken = await createSignedToken(env, state);
     return html(layout(env, "Interview", interviewView(job, state, nextToken, "This is a " + interviewMinutes(job, state) + " minute minimum screen. Continue with the next deep probe.")));
   }
@@ -362,6 +366,7 @@ async function answerInterview(request, env) {
     submittedAt: new Date().toISOString()
   };
   await appendApplication(env, job, application);
+  await upsertActiveInterview(env, job, state, "completed");
   return html(layout(env, "Submitted", completeView(job)));
 }
 
@@ -385,7 +390,8 @@ function adminLogout() {
 async function adminHomePage(env, admin) {
   const jobs = await readJobs(env);
   const counts = await getCandidateCounts(env, jobs);
-  return html(layout(env, "Admin", adminHomeView(jobs, counts, storageMode(env), admin), { admin: admin }));
+  const activeInterviews = await readActiveInterviews(env);
+  return html(layout(env, "Admin", adminHomeView(jobs, counts, activeInterviews, storageMode(env), admin), { admin: admin }));
 }
 
 async function adminJobPage(env, admin, jobId) {
@@ -833,7 +839,7 @@ function loginPage(env, message) {
   ].join(""));
 }
 
-function adminHomeView(jobs, counts, mode) {
+function adminHomeView(jobs, counts, activeInterviews, mode) {
   const rows = jobs.map(function(job) {
     const settings = interviewSettings(job);
     return [
@@ -857,10 +863,39 @@ function adminHomeView(jobs, counts, mode) {
     "<div><h1>Admin</h1><p>Storage: " + escapeHtml(mode) + "</p></div>",
     "<a class=\"button\" href=\"/admin/jobs/new\">Add new JD</a>",
     "</section>",
+    activeInterviewsView(activeInterviews || []),
     "<div class=\"table-wrap\"><table>",
     "<thead><tr><th>Job</th><th>Status</th><th>Positions</th><th>Pacing</th><th>Pass</th><th>Retakes</th><th>Candidates</th><th>Sheet tab</th><th>Actions</th></tr></thead>",
     "<tbody>" + (rows || "<tr><td colspan=\"9\">No jobs yet.</td></tr>") + "</tbody>",
     "</table></div>"
+  ].join("");
+}
+
+function activeInterviewsView(activeInterviews) {
+  const rows = activeInterviews.map(function(item) {
+    const elapsed = elapsedMinutesSince(item.startedAt);
+    const progress = Number(item.totalQuestions || 0) ? Math.round((Number(item.answeredCount || 0) / Number(item.totalQuestions || 1)) * 100) : 0;
+    const idle = elapsedMinutesSince(item.lastActivityAt);
+    const status = idle >= 30 ? "Idle" : "Live";
+    return [
+      "<tr>",
+      "<td><strong>" + escapeHtml(item.candidateName || "Candidate") + "</strong><p class=\"hint\">" + escapeHtml(item.candidateEmail || "") + "</p></td>",
+      "<td>" + escapeHtml(item.jobTitle || item.jobId || "") + "</td>",
+      "<td><strong>" + escapeHtml(item.answeredCount || 0) + " / " + escapeHtml(item.totalQuestions || 0) + "</strong><div class=\"mini-progress\"><span style=\"width:" + escapeHtml(progress) + "%\"></span></div><p class=\"hint\">" + escapeHtml(progress) + "% complete</p></td>",
+      "<td>" + escapeHtml(elapsed) + " min<p class=\"hint\">Minimum " + escapeHtml(item.minMinutes || MIN_INTERVIEW_MINUTES) + " min</p></td>",
+      "<td><span class=\"pill " + (status === "Idle" ? "risk-low" : "") + "\">" + escapeHtml(status) + "</span><p class=\"hint\">Last activity " + escapeHtml(idle) + " min ago</p></td>",
+      "<td>" + escapeHtml(item.candidateId || "") + "</td>",
+      "</tr>"
+    ].join("");
+  }).join("");
+  return [
+    "<section class=\"panel dashboard-section\">",
+    "<div class=\"row\"><div><h2>Ongoing interviews</h2><p class=\"hint\">Progress updates when a candidate begins and after each answer. Dashboard is recent-first.</p></div><span class=\"pill\">" + escapeHtml(activeInterviews.length) + " active</span></div>",
+    "<div class=\"table-wrap\"><table>",
+    "<thead><tr><th>Candidate</th><th>Job</th><th>Progress</th><th>Elapsed</th><th>Status</th><th>Candidate ID</th></tr></thead>",
+    "<tbody>" + (rows || "<tr><td colspan=\"6\">No ongoing interviews right now.</td></tr>") + "</tbody>",
+    "</table></div>",
+    "</section>"
   ].join("");
 }
 
@@ -1348,6 +1383,66 @@ async function readPendingCandidate(env, candidateId) {
   return memory.pending[candidateId] || null;
 }
 
+async function readActiveInterviews(env) {
+  let records = [];
+  if (env.AI_INTERVIEW_KV) {
+    records = await env.AI_INTERVIEW_KV.get("activeInterviews", "json") || [];
+  } else {
+    records = memory.activeInterviews || [];
+  }
+  const cutoff = Date.now() - 6 * 60 * 60 * 1000;
+  return (Array.isArray(records) ? records : []).filter(function(item) {
+    return item && item.status === "active" && new Date(item.lastActivityAt || item.startedAt || 0).getTime() >= cutoff;
+  }).sort(function(a, b) {
+    return String(b.lastActivityAt || b.startedAt || "").localeCompare(String(a.lastActivityAt || a.startedAt || ""));
+  });
+}
+
+async function writeActiveInterviews(env, records) {
+  const compact = (Array.isArray(records) ? records : []).slice(0, 100);
+  memory.activeInterviews = compact;
+  if (env.AI_INTERVIEW_KV) await env.AI_INTERVIEW_KV.put("activeInterviews", JSON.stringify(compact), { expirationTtl: 172800 });
+}
+
+async function upsertActiveInterview(env, job, state, status) {
+  const records = await readAllActiveInterviewRecords(env);
+  const now = new Date().toISOString();
+  const record = activeInterviewRecord(job, state, status, now);
+  const filtered = records.filter(function(item) {
+    return item && item.id !== record.id;
+  });
+  filtered.unshift(record);
+  await writeActiveInterviews(env, filtered);
+}
+
+async function readAllActiveInterviewRecords(env) {
+  if (env.AI_INTERVIEW_KV) {
+    const stored = await env.AI_INTERVIEW_KV.get("activeInterviews", "json");
+    return Array.isArray(stored) ? stored : [];
+  }
+  return Array.isArray(memory.activeInterviews) ? memory.activeInterviews : [];
+}
+
+function activeInterviewRecord(job, state, status, now) {
+  return {
+    id: state.id,
+    status: status || "active",
+    jobId: state.jobId,
+    jobTitle: job && job.title || "",
+    candidateName: state.candidate && state.candidate.name || "",
+    candidateEmail: state.candidate && state.candidate.email || "",
+    candidatePhone: state.candidate && state.candidate.phone || "",
+    candidateId: state.candidateId || "",
+    startedAt: state.startedAt || now,
+    lastActivityAt: now,
+    answeredCount: Array.isArray(state.answers) ? state.answers.filter(Boolean).length : 0,
+    currentQuestion: Math.min(Number(state.index || 0) + 1, Array.isArray(state.questions) ? state.questions.length : 0),
+    totalQuestions: Array.isArray(state.questions) ? state.questions.length : 0,
+    minMinutes: interviewSettings(job, state).minMinutes,
+    integrityRisk: integrityRiskLabel(state.integrityEvents || [])
+  };
+}
+
 function memoryJobs() {
   if (!memory.jobs) {
     memory.jobs = [hydrateJob({
@@ -1741,6 +1836,12 @@ function hasOwn(object, key) {
 
 function elapsedInterviewMinutes(state) {
   return Math.floor((Date.now() - new Date(state.startedAt).getTime()) / 60000);
+}
+
+function elapsedMinutesSince(value) {
+  const time = new Date(value || 0).getTime();
+  if (!time) return 0;
+  return Math.max(0, Math.floor((Date.now() - time) / 60000));
 }
 
 function extraProbeQuestion(count) {
@@ -2450,7 +2551,7 @@ function css() {
     "input:focus,textarea:focus,select:focus{outline:3px solid rgba(15,118,110,.18);border-color:var(--brand)}",
     ".jd{margin-top:18px;color:#344054;line-height:1.6}.jd.compact{max-height:300px;overflow:auto}",
     ".flash{margin:0 0 18px;padding:12px 14px;border:1px solid #fedf89;border-radius:6px;background:#fffaeb;color:#93370d}",
-    ".progress{height:8px;border-radius:999px;overflow:hidden;background:#e6ebf2;margin-bottom:24px}.progress span{display:block;height:100%;background:var(--brand)}",
+    ".progress{height:8px;border-radius:999px;overflow:hidden;background:#e6ebf2;margin-bottom:24px}.progress span{display:block;height:100%;background:var(--brand)}.mini-progress{height:7px;min-width:120px;margin:8px 0 0;border-radius:999px;overflow:hidden;background:#e6ebf2}.mini-progress span{display:block;height:100%;background:var(--brand)}.dashboard-section{margin-bottom:24px}",
     ".clean-list{margin:0;padding-left:18px;color:#344054;line-height:1.65}.topic-box{margin-top:22px;padding:16px;border:1px solid #c8d1ff;border-radius:8px;background:#f4f6ff}.topic-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.topic-chip{display:inline-flex;align-items:center;min-height:34px;padding:6px 10px;border:1px solid #aab8ff;border-radius:6px;background:#eef1ff;color:#1d2939;font-weight:700}.diagram-panel{margin:18px 0;padding:14px;border:1px solid #c8d1ff;border-radius:8px;background:#f7f8ff}.diagram-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px;color:#475467;font-size:12px;font-weight:800;text-transform:uppercase}.mermaid{margin:0;overflow:auto;text-align:center;background:white;border:1px solid #e1e7f5;border-radius:6px;padding:12px}.checks{display:grid;gap:10px;margin:14px 0}.check-row{margin:0;padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc;color:#475467}.check-row.ok{border-color:#9dd4c9;background:#eefaf7;color:#115e59}.check-row.bad{border-color:#f6c7a7;background:#fff4ed;color:#93370d}.hidden{display:none}.next-card{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;text-align:left}.next-card p{margin:6px 0 0}",
     ".rules-panel{margin-top:22px}.rules-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;color:#475467;font-size:12px;font-weight:800;text-transform:uppercase}.rules-head strong{color:var(--brand)}.rules-grid,.rules-admin-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.rule-card{padding:16px;border-radius:8px;border:1px solid var(--line)}.rule-card h3{margin:0 0 10px;font-size:18px}.rule-card ul{margin:0;padding-left:18px;line-height:1.55}.rule-card.allowed{border-color:#9dd4c9;background:#eefaf7}.rule-card.blocked{border-color:#f6c7a7;background:#fff4ed}.rule-card.allowed h3{color:#115e59}.rule-card.blocked h3{color:#93370d}.rules-admin{display:grid;gap:14px;padding:18px;border:1px solid #c8d1ff;border-radius:8px;background:#f7f8ff}.rules-admin h3{margin:0;font-size:20px}.rule-fieldset{display:grid;gap:12px;margin:0;padding:16px;border:1px solid #d8def8;border-radius:8px;background:white}.rule-fieldset legend{padding:0 6px;color:#344054;font-weight:800}.rule-check{align-items:flex-start;min-height:auto;padding:8px 0}",
     ".table-wrap{overflow-x:auto;background:white;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:13px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc;color:#475467;font-size:12px;text-transform:uppercase;letter-spacing:0}tr:last-child td{border-bottom:0}",
