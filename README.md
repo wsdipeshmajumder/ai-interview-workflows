@@ -6,6 +6,10 @@ It gives recruiters an admin panel, creates one Google Sheet tab per job, lets c
 
 If Google Sheets secrets are not ready, the app stores data in Cloudflare KV when the AI_INTERVIEW_KV binding is configured.
 
+Live app:
+
+   https://ai-interview-workflows.wsipl.workers.dev/jobs
+
 ## Local setup
 
 1. Install dependencies:

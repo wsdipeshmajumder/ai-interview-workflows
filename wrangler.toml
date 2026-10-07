@@ -5,6 +5,7 @@ workers_dev = true
 
 [vars]
 APP_NAME = "AI Interview Workflows"
+APP_URL = "https://ai-interview-workflows.wsipl.workers.dev"
 ADMIN_USER = "admin"
 OPENROUTER_MODEL = "openai/gpt-4o-mini"
 GOOGLE_SHEET_ID = "1aW0_18-qqExMoqwJw11kVoNe5ajsXmkaHULrQcC1VQo"
