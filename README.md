@@ -6,6 +6,10 @@ It gives recruiters an admin panel, creates one Google Sheet tab per job, lets c
 
 Each JD has interview pacing variables in admin: minimum minutes, minimum questions, maximum questions, and passing score. The current default screen is 30 minutes minimum, 25-30 questions, and an 85/100 passing bar.
 
+Candidates now see an untimed pre-interview lobby before the timed test begins. It explains expectations, runs a browser/network/resume check, and only then launches the interview timer. Candidate-facing completion never reveals the internal score; recruiter analysis stays in admin.
+
+Repeat attempts are blocked per job by candidate email. Recruiters can override this from the job's admin controls by enabling repeat attempts.
+
 If Google Sheets secrets are not ready, the app stores data in Cloudflare KV when the AI_INTERVIEW_KV binding is configured.
 
 Live app:

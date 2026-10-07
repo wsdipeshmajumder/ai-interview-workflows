@@ -12,7 +12,8 @@ const JOBS_HEADER = [
   "market_context",
   "min_questions",
   "max_questions",
-  "passing_score"
+  "passing_score",
+  "allow_retakes"
 ];
 
 const APPLICATION_HEADER = [
@@ -85,6 +86,7 @@ async function route(request, env) {
   if (path.startsWith("/jobs/") && path.endsWith("/start") && method === "POST") {
     return startInterview(request, env, path.split("/")[2]);
   }
+  if (path === "/interview/start" && method === "POST") return launchInterview(request, env);
   if (path === "/interview/answer" && method === "POST") return answerInterview(request, env);
   if (path === "/admin/login" && method === "GET") return html(loginPage(env, ""));
   if (path === "/admin/login" && method === "POST") return adminLogin(request, env);
@@ -155,26 +157,62 @@ async function startInterview(request, env, jobId) {
     return html(layout(env, job.title, jobDetailView(job, "Could not read enough resume text. Paste the resume text in the box and start again.")), 400);
   }
 
-  const interview = await generateInterview(env, job, resumeText);
   const settings = interviewSettings(job);
-  const state = {
-    id: id("int"),
+  if (!settings.allowRetakes && await hasPriorApplication(env, job, candidate)) {
+    return html(layout(env, job.title, jobDetailView(job, duplicateAttemptMessage(candidate))), 409);
+  }
+
+  const pending = {
+    id: id("prep"),
+    type: "preflight",
     jobId: job.id,
     candidate: candidate,
     resumeFileName: resumeFile && resumeFile.name ? String(resumeFile.name).slice(0, 160) : "resume",
     resumeText: resumeText,
+    minMinutes: settings.minMinutes,
+    minQuestions: settings.minQuestions,
+    maxQuestions: settings.maxQuestions,
+    passingScore: settings.passingScore,
+    allowRetakes: settings.allowRetakes,
+    createdAt: new Date().toISOString()
+  };
+  const token = await createSignedToken(env, pending);
+  return html(layout(env, "Before interview", preInterviewView(job, pending, token)));
+}
+
+async function launchInterview(request, env) {
+  const form = await request.formData();
+  const token = clean(form.get("token"));
+  const pending = await verifySignedToken(env, token);
+  if (!pending || pending.type !== "preflight") return html(layout(env, "Expired", errorView("This interview setup expired. Please start again.")), 400);
+  const job = await getJob(env, pending.jobId);
+  if (!job || job.status !== "active") return html(layout(env, "Unavailable", errorView("Opening unavailable.")), 404);
+
+  const settings = interviewSettings(job, pending);
+  if (!settings.allowRetakes && await hasPriorApplication(env, job, pending.candidate)) {
+    return html(layout(env, job.title, jobDetailView(job, duplicateAttemptMessage(pending.candidate))), 409);
+  }
+
+  const interview = await generateInterview(env, job, pending.resumeText);
+  const state = {
+    id: id("int"),
+    jobId: job.id,
+    candidate: pending.candidate,
+    resumeFileName: pending.resumeFileName,
+    resumeText: pending.resumeText,
     questions: interview.questions,
     minMinutes: settings.minMinutes,
     minQuestions: settings.minQuestions,
     maxQuestions: settings.maxQuestions,
     passingScore: settings.passingScore,
+    allowRetakes: settings.allowRetakes,
     index: 0,
     answers: [],
     startedAt: new Date().toISOString(),
     aiNote: interview.note || ""
   };
-  const token = await createSignedToken(env, state);
-  return html(layout(env, "Interview", interviewView(job, state, token)));
+  const interviewToken = await createSignedToken(env, state);
+  return html(layout(env, "Interview", interviewView(job, state, interviewToken)));
 }
 
 async function answerInterview(request, env) {
@@ -269,6 +307,7 @@ async function createJobAction(request, env, admin) {
     minQuestions: settingNumber(form.get("minQuestions"), DEFAULT_MIN_QUESTIONS, 1, 80),
     maxQuestions: settingNumber(form.get("maxQuestions"), DEFAULT_MAX_QUESTIONS, 1, 100),
     passingScore: settingNumber(form.get("passingScore"), DEFAULT_PASSING_SCORE, 50, 100),
+    allowRetakes: settingBool(form.get("allowRetakes")),
     status: clean(form.get("status")) || "active",
     jd: normalizeText(form.get("jd") || "", 12000),
     marketContext: normalizeText(form.get("marketContext") || env.DEFAULT_MARKET_CONTEXT || "", 4000)
@@ -294,6 +333,7 @@ async function updateJobSettingsAction(request, env, jobId) {
     minQuestions: settingNumber(form.get("minQuestions"), DEFAULT_MIN_QUESTIONS, 1, 80),
     maxQuestions: settingNumber(form.get("maxQuestions"), DEFAULT_MAX_QUESTIONS, 1, 100),
     passingScore: settingNumber(form.get("passingScore"), DEFAULT_PASSING_SCORE, 50, 100),
+    allowRetakes: settingBool(form.get("allowRetakes")),
     jd: normalizeText(form.get("jd") || "", 12000),
     marketContext: normalizeText(form.get("marketContext") || env.DEFAULT_MARKET_CONTEXT || "", 4000)
   };
@@ -380,6 +420,69 @@ function jobDetailView(job, message) {
   ].join("");
 }
 
+function preInterviewView(job, pending, token) {
+  const settings = interviewSettings(job, pending);
+  const resumeWords = normalizeText(pending.resumeText || "", 14000).split(/\s+/).filter(Boolean).length;
+  return [
+    "<section class=\"preflight\">",
+    "<div>",
+    "<p class=\"eyebrow\">Before you begin</p>",
+    "<h1>" + escapeHtml(job.title) + "</h1>",
+    "<p class=\"lead\">This screen is not timed. Use it to get ready; the timed interview starts only after the checks pass and you click Begin.</p>",
+    "</div>",
+    "<div class=\"preflight-grid\">",
+    "<section class=\"panel\">",
+    "<h2>What to expect</h2>",
+    "<ul class=\"clean-list\">",
+    "<li>Minimum " + escapeHtml(settings.minMinutes) + " minutes once the interview starts.</li>",
+    "<li>" + escapeHtml(questionRangeText(settings)) + " across baseline, intermediate, advanced, and pressure-test questions.</li>",
+    "<li>Questions are based on your resume, the JD, and current AI workflow expectations.</li>",
+    "<li>Answer with concrete examples, metrics, tools, tradeoffs, and failure cases. Generic answers are scored strictly.</li>",
+    "<li>You cannot see the internal score after submission. The recruiter will review the AI analysis and get back to you.</li>",
+    "</ul>",
+    "</section>",
+    "<section class=\"panel\">",
+    "<h2>Tool check</h2>",
+    "<div class=\"checks\">",
+    "<p id=\"checkResume\" class=\"check-row pending\">Resume text captured (" + escapeHtml(resumeWords) + " words)</p>",
+    "<p id=\"checkNetwork\" class=\"check-row pending\">Checking connection to interview server</p>",
+    "<p id=\"checkBrowser\" class=\"check-row pending\">Checking browser storage and timer support</p>",
+    "</div>",
+    "<p id=\"checkHint\" class=\"hint\">Keep this tab open, stay on a stable connection, and avoid refreshing during the interview.</p>",
+    "<form method=\"post\" action=\"/interview/start\" class=\"form\">",
+    "<input type=\"hidden\" name=\"token\" value=\"" + escapeHtml(token) + "\">",
+    "<button id=\"beginButton\" class=\"button full\" type=\"submit\" disabled>Run checks first</button>",
+    "</form>",
+    "<button id=\"retryChecks\" class=\"button secondary full\" type=\"button\">Retry checks</button>",
+    "</section>",
+    "</div>",
+    "</section>",
+    preflightScript(resumeWords)
+  ].join("");
+}
+
+function preflightScript(resumeWords) {
+  const resumeOk = resumeWords >= 20;
+  const resumeText = "Resume text captured (" + resumeWords + " words)";
+  return [
+    "<script>",
+    "(function(){",
+    "var button=document.getElementById('beginButton');",
+    "var retry=document.getElementById('retryChecks');",
+    "var hint=document.getElementById('checkHint');",
+    "function set(id,ok,text){var el=document.getElementById(id);el.className='check-row '+(ok?'ok':'bad');el.textContent=text;return ok;}",
+    "async function run(){button.disabled=true;button.textContent='Running checks...';hint.textContent='Checking the tools needed for the timed interview.';var ok=true;",
+    "ok=set('checkResume'," + JSON.stringify(resumeOk) + "," + JSON.stringify(resumeText) + ")&&ok;",
+    "try{localStorage.setItem('aiInterviewCheck','1');localStorage.removeItem('aiInterviewCheck');ok=set('checkBrowser',typeof setInterval==='function','Browser storage and timer ready')&&ok;}catch(e){ok=set('checkBrowser',false,'Browser storage unavailable. Use a normal browser window.')&&ok;}",
+    "try{var res=await fetch('/health',{cache:'no-store'});ok=set('checkNetwork',res.ok,'Connection to interview server ready')&&ok;}catch(e){ok=set('checkNetwork',false,'Connection check failed. Check internet and retry.')&&ok;}",
+    "button.disabled=!ok;button.textContent=ok?'Begin timed interview':'Checks failed';hint.textContent=ok?'You are ready. The timer starts after you click Begin.':'Fix the failed check, then retry.';",
+    "}",
+    "retry.addEventListener('click',run);run();",
+    "})();",
+    "</script>"
+  ].join("");
+}
+
 function interviewView(job, state, token, message) {
   const settings = interviewSettings(job, state);
   const current = state.index + 1;
@@ -412,8 +515,9 @@ function completeView(job) {
   return [
     "<section class=\"complete\">",
     "<p class=\"eyebrow\">" + escapeHtml(job.title) + "</p>",
-    "<h1>Interview submitted</h1>",
-    "<p>Your responses have been recorded. The recruiter will review the AI screening result and continue with the next round.</p>",
+    "<h1>Thank you. Your interview is submitted.</h1>",
+    "<p>Your responses have been recorded successfully. The recruiter will review the screening analysis along with your resume and get back to you about the next round.</p>",
+    "<div class=\"next-card\"><strong>What happens next</strong><p>No score is shown here. The hiring team receives the detailed AI analysis, strengths, risks, and fit criteria in the recruiter dashboard.</p></div>",
     "<a class=\"button\" href=\"/jobs\">Back to openings</a>",
     "</section>"
   ].join("");
@@ -458,6 +562,7 @@ function adminHomeView(jobs, counts, mode) {
       "<td>" + escapeHtml(job.positions) + "</td>",
       "<td>" + escapeHtml(settings.minMinutes) + " min / " + escapeHtml(questionRangeText(settings)) + "</td>",
       "<td>" + escapeHtml(settings.passingScore) + "+</td>",
+      "<td>" + escapeHtml(settings.allowRetakes ? "Allowed" : "Blocked") + "</td>",
       "<td>" + escapeHtml(counts[job.id] || 0) + "</td>",
       "<td>" + escapeHtml(job.sheetTitle || "-") + "</td>",
       "</tr>"
@@ -471,8 +576,8 @@ function adminHomeView(jobs, counts, mode) {
     "<a class=\"button\" href=\"/admin/jobs/new\">New job</a>",
     "</section>",
     "<div class=\"table-wrap\"><table>",
-    "<thead><tr><th>Job</th><th>Status</th><th>Positions</th><th>Pacing</th><th>Pass</th><th>Candidates</th><th>Sheet tab</th></tr></thead>",
-    "<tbody>" + (rows || "<tr><td colspan=\"7\">No jobs yet.</td></tr>") + "</tbody>",
+    "<thead><tr><th>Job</th><th>Status</th><th>Positions</th><th>Pacing</th><th>Pass</th><th>Retakes</th><th>Candidates</th><th>Sheet tab</th></tr></thead>",
+    "<tbody>" + (rows || "<tr><td colspan=\"8\">No jobs yet.</td></tr>") + "</tbody>",
     "</table></div>"
   ].join("");
 }
@@ -492,6 +597,7 @@ function newJobPage(env, admin, defaults, message) {
     "<label>Maximum questions<input name=\"maxQuestions\" type=\"number\" min=\"1\" max=\"100\" value=\"" + escapeHtml(defaults.maxQuestions || DEFAULT_MAX_QUESTIONS) + "\"></label>",
     "<label>Passing score<input name=\"passingScore\" type=\"number\" min=\"50\" max=\"100\" value=\"" + escapeHtml(defaults.passingScore || DEFAULT_PASSING_SCORE) + "\"></label>",
     "<label>Status<select name=\"status\"><option value=\"active\">active</option><option value=\"closed\">closed</option></select></label>",
+    "<label class=\"check\"><input name=\"allowRetakes\" type=\"checkbox\" value=\"1\"" + (settingBool(defaults.allowRetakes) ? " checked" : "") + "> Allow repeat attempts for this opening</label>",
     "</div>",
     "<label>Job description<textarea name=\"jd\" rows=\"12\" required>" + escapeHtml(defaults.jd || SAMPLE_JD) + "</textarea></label>",
     "<label>Market trends and interviewer guidance<textarea name=\"marketContext\" rows=\"5\">" + escapeHtml(defaults.marketContext || env.DEFAULT_MARKET_CONTEXT || "") + "</textarea></label>",
@@ -521,7 +627,7 @@ function adminJobView(job, applications) {
   }).join("");
   return [
     "<section class=\"page-head row\">",
-    "<div><p class=\"eyebrow\">" + escapeHtml(job.status) + "</p><h1>" + escapeHtml(job.title) + "</h1><p>" + escapeHtml(job.sheetTitle || "") + " · " + escapeHtml(settings.minMinutes) + " min · " + escapeHtml(questionRangeText(settings)) + " · pass " + escapeHtml(settings.passingScore) + "+</p></div>",
+    "<div><p class=\"eyebrow\">" + escapeHtml(job.status) + "</p><h1>" + escapeHtml(job.title) + "</h1><p>" + escapeHtml(job.sheetTitle || "") + " · " + escapeHtml(settings.minMinutes) + " min · " + escapeHtml(questionRangeText(settings)) + " · pass " + escapeHtml(settings.passingScore) + "+ · retakes " + escapeHtml(settings.allowRetakes ? "allowed" : "blocked") + "</p></div>",
     "<form method=\"post\" action=\"/admin/jobs/" + encodeURIComponent(job.id) + "/status\" class=\"status-form\">",
     "<select name=\"status\"><option value=\"active\"" + (job.status === "active" ? " selected" : "") + ">active</option><option value=\"closed\"" + (job.status === "closed" ? " selected" : "") + ">closed</option></select>",
     "<button class=\"button secondary\" type=\"submit\">Update</button>",
@@ -534,6 +640,7 @@ function adminJobView(job, applications) {
     "<label>Minimum questions<input name=\"minQuestions\" type=\"number\" min=\"1\" max=\"80\" value=\"" + escapeHtml(settings.minQuestions) + "\"></label>",
     "<label>Maximum questions<input name=\"maxQuestions\" type=\"number\" min=\"1\" max=\"100\" value=\"" + escapeHtml(settings.maxQuestions) + "\"></label>",
     "<label>Passing score<input name=\"passingScore\" type=\"number\" min=\"50\" max=\"100\" value=\"" + escapeHtml(settings.passingScore) + "\"></label>",
+    "<label class=\"check\"><input name=\"allowRetakes\" type=\"checkbox\" value=\"1\"" + (settings.allowRetakes ? " checked" : "") + "> Allow repeat attempts for this opening</label>",
     "</div>",
     "<label>Job description<textarea name=\"jd\" rows=\"10\" required>" + escapeHtml(job.jd || "") + "</textarea></label>",
     "<label>Market trends and interviewer guidance<textarea name=\"marketContext\" rows=\"4\">" + escapeHtml(job.marketContext || "") + "</textarea></label>",
@@ -588,7 +695,7 @@ function resumeExtractScripts() {
 async function readJobs(env) {
   if (!hasGoogle(env)) return readFallbackJobs(env);
   await ensureJobsSheet(env);
-  const rows = await valuesGet(env, quoteSheet("Jobs") + "!A2:N");
+  const rows = await valuesGet(env, quoteSheet("Jobs") + "!A2:O");
   return rows.filter(function(row) {
     return row[0] && row[1];
   }).map(rowToJob).map(hydrateJob).sort(function(a, b) {
@@ -614,6 +721,7 @@ async function createJob(env, input) {
     minQuestions: settingNumber(input.minQuestions, DEFAULT_MIN_QUESTIONS, 1, 80),
     maxQuestions: settingNumber(input.maxQuestions, DEFAULT_MAX_QUESTIONS, 1, 100),
     passingScore: settingNumber(input.passingScore, DEFAULT_PASSING_SCORE, 50, 100),
+    allowRetakes: settingBool(input.allowRetakes),
     status: input.status || "active",
     sheetTitle: safeSheetTitle(input.title) + " " + id("").slice(-6),
     createdAt: new Date().toISOString(),
@@ -645,7 +753,7 @@ async function updateJobStatus(env, jobId, status) {
     return job;
   }
   const values = [JOBS_HEADER].concat(jobs.map(hydrateJob).map(jobToRow));
-  await valuesUpdate(env, quoteSheet("Jobs") + "!A1:N", values);
+  await valuesUpdate(env, quoteSheet("Jobs") + "!A1:O", values);
   return job;
 }
 
@@ -659,6 +767,7 @@ async function updateJobSettings(env, jobId, input) {
   job.minQuestions = input.minQuestions;
   job.maxQuestions = Math.max(input.minQuestions, input.maxQuestions);
   job.passingScore = input.passingScore;
+  job.allowRetakes = settingBool(input.allowRetakes);
   job.jd = input.jd;
   job.marketContext = input.marketContext;
   if (!hasGoogle(env)) {
@@ -666,7 +775,7 @@ async function updateJobSettings(env, jobId, input) {
     return job;
   }
   const values = [JOBS_HEADER].concat(jobs.map(hydrateJob).map(jobToRow));
-  await valuesUpdate(env, quoteSheet("Jobs") + "!A1:N", values);
+  await valuesUpdate(env, quoteSheet("Jobs") + "!A1:O", values);
   return job;
 }
 
@@ -706,6 +815,22 @@ async function readApplications(env, job) {
   }).sort(function(a, b) {
     return String(b.submittedAt).localeCompare(String(a.submittedAt));
   });
+}
+
+async function hasPriorApplication(env, job, candidate) {
+  const normalizedEmail = normalizeEmail(candidate && candidate.email ? candidate.email : candidate);
+  const normalizedPhone = normalizePhone(candidate && candidate.phone);
+  if (!normalizedEmail && !normalizedPhone) return false;
+  const applications = await readApplications(env, job);
+  return applications.some(function(application) {
+    const existing = application.candidate || {};
+    return (normalizedEmail && normalizeEmail(existing.email) === normalizedEmail) || (normalizedPhone && normalizePhone(existing.phone) === normalizedPhone);
+  });
+}
+
+function duplicateAttemptMessage(candidate) {
+  const identifier = normalizeEmail(candidate && candidate.email ? candidate.email : candidate) || "this candidate";
+  return "An interview has already been submitted for " + identifier + " on this opening. Contact the recruiter if a retake is needed.";
 }
 
 async function appendApplication(env, job, application) {
@@ -774,6 +899,7 @@ function memoryJobs() {
       minQuestions: DEFAULT_MIN_QUESTIONS,
       maxQuestions: DEFAULT_MAX_QUESTIONS,
       passingScore: DEFAULT_PASSING_SCORE,
+      allowRetakes: false,
       status: "active",
       sheetTitle: "Analyst AI Workflows",
       createdAt: new Date().toISOString(),
@@ -799,7 +925,8 @@ function rowToJob(row) {
     marketContext: row[10] || "",
     minQuestions: Number(row[11] || DEFAULT_MIN_QUESTIONS),
     maxQuestions: Number(row[12] || DEFAULT_MAX_QUESTIONS),
-    passingScore: Number(row[13] || DEFAULT_PASSING_SCORE)
+    passingScore: Number(row[13] || DEFAULT_PASSING_SCORE),
+    allowRetakes: settingBool(row[14])
   };
 }
 
@@ -818,7 +945,8 @@ function jobToRow(job) {
     job.marketContext,
     interviewSettings(job).minQuestions,
     interviewSettings(job).maxQuestions,
-    interviewSettings(job).passingScore
+    interviewSettings(job).passingScore,
+    interviewSettings(job).allowRetakes ? "TRUE" : "FALSE"
   ];
 }
 
@@ -973,10 +1101,12 @@ function hydrateJob(job) {
   copy.minQuestions = settings.minQuestions;
   copy.maxQuestions = settings.maxQuestions;
   copy.passingScore = settings.passingScore;
+  copy.allowRetakes = settings.allowRetakes;
   return copy;
 }
 
 function interviewSettings(job, state) {
+  const allowRetakesSource = hasOwn(state, "allowRetakes") ? state.allowRetakes : job && job.allowRetakes;
   const minMinutes = settingNumber((state && state.minMinutes) || (job && job.estimatedMinutes), MIN_INTERVIEW_MINUTES, MIN_INTERVIEW_MINUTES, 120);
   const minQuestions = settingNumber((state && state.minQuestions) || (job && job.minQuestions), DEFAULT_MIN_QUESTIONS, 1, 80);
   const maxQuestions = settingNumber((state && state.maxQuestions) || (job && job.maxQuestions), DEFAULT_MAX_QUESTIONS, minQuestions, 100);
@@ -988,7 +1118,8 @@ function interviewSettings(job, state) {
     targetQuestions: Math.max(minQuestions, maxQuestions),
     passingScore: passingScore,
     maybeScore: Math.max(60, passingScore - 15),
-    strongHireScore: Math.min(95, passingScore + 7)
+    strongHireScore: Math.min(95, passingScore + 7),
+    allowRetakes: settingBool(allowRetakesSource)
   };
 }
 
@@ -1004,6 +1135,15 @@ function settingNumber(value, fallback, min, max) {
   const parsed = Number(value);
   const number = Number.isFinite(parsed) ? Math.round(parsed) : fallback;
   return Math.max(min, Math.min(max, number));
+}
+
+function settingBool(value) {
+  const normalized = clean(value).toLowerCase();
+  return value === true || value === 1 || ["1", "true", "yes", "on", "allowed"].indexOf(normalized) !== -1;
+}
+
+function hasOwn(object, key) {
+  return Boolean(object && Object.prototype.hasOwnProperty.call(object, key));
 }
 
 function elapsedInterviewMinutes(state) {
@@ -1417,6 +1557,14 @@ function clean(value) {
   return String(value == null ? "" : value).replace(/\s+/g, " ").trim();
 }
 
+function normalizeEmail(value) {
+  return clean(value).toLowerCase();
+}
+
+function normalizePhone(value) {
+  return clean(value).replace(/\D/g, "");
+}
+
 function normalizeText(value, limit) {
   return String(value == null ? "" : value).replace(/\r/g, "\n").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim().slice(0, limit || 18000);
 }
@@ -1525,24 +1673,26 @@ function css() {
     "nav{display:flex;align-items:center;gap:16px;color:var(--muted);font-size:14px}",
     "nav a,.ghost{color:var(--muted);text-decoration:none}.ghost{border:0;background:transparent;cursor:pointer;font:inherit;padding:0}",
     ".shell{width:min(1120px,calc(100% - 32px));margin:0 auto;padding:34px 0 56px}",
-    ".page-head{margin-bottom:22px}.page-head h1,.split h1,.interview h1,.complete h1,.auth h1{margin:0 0 10px;font-size:clamp(28px,5vw,48px);line-height:1.03}",
-    ".page-head p,.complete p,.muted,.hint{color:var(--muted)}.hint{font-size:13px;line-height:1.4}.hint.bad{color:var(--warn)}",
+    ".page-head{margin-bottom:22px}.page-head h1,.split h1,.interview h1,.complete h1,.auth h1,.preflight h1{margin:0 0 10px;font-size:clamp(28px,5vw,48px);line-height:1.03}",
+    ".page-head p,.complete p,.muted,.hint,.lead{color:var(--muted)}.lead{max-width:720px;font-size:18px;line-height:1.5}.hint{font-size:13px;line-height:1.4}.hint.bad{color:var(--warn)}",
     ".row{display:flex;align-items:center;justify-content:space-between;gap:20px}.stack{display:grid;gap:14px}",
     ".job-card,.panel,.auth,.interview,.complete,.wide{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(17,24,39,.05)}",
     ".job-card{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:22px}.job-card h2{margin:4px 0 6px;font-size:22px}",
     ".eyebrow{margin:0 0 8px;color:var(--accent);font-size:12px;font-weight:800;letter-spacing:0;text-transform:uppercase}",
     ".button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:0 16px;border:1px solid var(--brand);border-radius:6px;background:var(--brand);color:white;font-weight:800;text-decoration:none;cursor:pointer}",
     ".button:hover{background:var(--brand-dark)}.button.secondary{background:white;color:var(--brand)}.button.full{width:100%}.button:disabled{opacity:.65;cursor:wait}",
-    ".split{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:28px;align-items:start}.panel,.auth,.interview,.complete,.wide{padding:24px}.auth{width:min(420px,100%);margin:8vh auto 0}",
+    ".split{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:28px;align-items:start}.preflight-grid{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:22px;align-items:start}.panel,.auth,.interview,.complete,.wide{padding:24px}.auth{width:min(420px,100%);margin:8vh auto 0}",
     ".form{display:grid;gap:16px}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}",
     "label{display:grid;gap:7px;color:#344054;font-size:14px;font-weight:700}",
-    "input,textarea,select{width:100%;min-height:42px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:6px;background:white;color:var(--ink);font:inherit}textarea{resize:vertical}",
+    "input,textarea,select{width:100%;min-height:42px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:6px;background:white;color:var(--ink);font:inherit}input[type=checkbox]{width:auto;min-height:auto;padding:0}textarea{resize:vertical}",
+    "label.check{display:flex;align-items:center;gap:10px;min-height:42px}",
     "input:focus,textarea:focus,select:focus{outline:3px solid rgba(15,118,110,.18);border-color:var(--brand)}",
     ".jd{margin-top:18px;color:#344054;line-height:1.6}.jd.compact{max-height:300px;overflow:auto}",
     ".flash{margin:0 0 18px;padding:12px 14px;border:1px solid #fedf89;border-radius:6px;background:#fffaeb;color:#93370d}",
     ".progress{height:8px;border-radius:999px;overflow:hidden;background:#e6ebf2;margin-bottom:24px}.progress span{display:block;height:100%;background:var(--brand)}",
+    ".clean-list{margin:0;padding-left:18px;color:#344054;line-height:1.65}.checks{display:grid;gap:10px;margin:14px 0}.check-row{margin:0;padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc;color:#475467}.check-row.ok{border-color:#9dd4c9;background:#eefaf7;color:#115e59}.check-row.bad{border-color:#f6c7a7;background:#fff4ed;color:#93370d}.next-card{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;text-align:left}.next-card p{margin:6px 0 0}",
     ".table-wrap{overflow-x:auto;background:white;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:13px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc;color:#475467;font-size:12px;text-transform:uppercase;letter-spacing:0}tr:last-child td{border-bottom:0}",
     ".status-form{display:flex;gap:10px;align-items:center}.empty{padding:46px 0;text-align:center}.complete{max-width:680px;margin:8vh auto 0;text-align:center}.section-gap{margin-top:24px}.pill{display:inline-flex;padding:3px 8px;border-radius:999px;background:#eef6f5;color:#115e59;font-weight:800;font-size:12px}",
-    "@media(max-width:760px){.topbar,.row,.job-card,.status-form{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2{grid-template-columns:1fr}.page-head h1,.split h1,.interview h1,.complete h1,.auth h1{font-size:32px}}"
+    "@media(max-width:760px){.topbar,.row,.job-card,.status-form{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid{grid-template-columns:1fr}.page-head h1,.split h1,.interview h1,.complete h1,.auth h1,.preflight h1{font-size:32px}}"
   ].join("");
 }
