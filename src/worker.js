@@ -525,25 +525,45 @@ function interviewView(job, state, token, message) {
   const current = state.index + 1;
   const total = state.questions.length;
   const question = state.questions[state.index];
-  const pct = Math.max(3, Math.round((state.index / total) * 100));
+  const pct = Math.max(3, Math.round(((state.index + 1) / total) * 100));
   const isFinal = current === total;
   const endAt = new Date(new Date(state.startedAt).getTime() + settings.minMinutes * 60 * 1000).toISOString();
   const remainingSeconds = Math.max(0, Math.ceil((new Date(endAt).getTime() - Date.now()) / 1000));
+  const diagram = renderMermaidDiagram(question);
   return [
     message ? "<div class=\"flash\">" + escapeHtml(message) + "</div>" : "",
     "<section class=\"interview\">",
+    "<div class=\"interview-main\">",
     "<div class=\"progress\"><span style=\"width:" + pct + "%\"></span></div>",
-    "<p class=\"eyebrow\">" + escapeHtml(job.title) + " · Question " + current + " of " + total + "</p>",
-    "<h1>" + escapeHtml(question.question) + "</h1>",
-    "<p class=\"muted\">" + escapeHtml(question.competency || "Interview signal") + " · " + escapeHtml(question.complexity || "mixed") + " · " + escapeHtml(question.timeBoxMinutes || 1) + " min · Minimum screen " + escapeHtml(settings.minMinutes) + " min</p>",
-    isFinal ? "<p id=\"timerHint\" class=\"hint\">Final submission unlocks after the " + escapeHtml(settings.minMinutes) + " minute minimum.</p>" : "",
-    "<form method=\"post\" action=\"/interview/answer\" class=\"form\">",
+    "<div class=\"question-kicker\"><span>" + escapeHtml(job.title) + "</span><span>Question " + current + " of " + total + "</span></div>",
+    "<h1 class=\"question-title\">" + escapeHtml(question.question) + "</h1>",
+    diagram,
+    "<p class=\"muted question-meta\">" + escapeHtml(question.competency || "Interview signal") + " · " + escapeHtml(question.complexity || "mixed") + " · suggested " + escapeHtml(question.timeBoxMinutes || 1) + " min</p>",
+    "<form id=\"answerForm\" method=\"post\" action=\"/interview/answer\" class=\"form\">",
     "<input type=\"hidden\" name=\"token\" value=\"" + escapeHtml(token) + "\">",
     "<label>Your answer<textarea name=\"answer\" rows=\"9\" required autofocus></textarea></label>",
     "<button id=\"answerButton\" class=\"button\" type=\"submit\" " + (isFinal && remainingSeconds > 0 ? "disabled" : "") + ">" + (isFinal ? "Submit interview" : "Next question") + "</button>",
     "</form>",
+    "</div>",
+    "<aside class=\"interview-side\">",
+    "<div class=\"timer-card\">",
+    "<p class=\"eyebrow\">Interview timer</p>",
+    "<div class=\"timer-grid\"><div><span>Elapsed</span><strong id=\"elapsedTimer\">0:00</strong></div><div><span>Min remaining</span><strong id=\"remainingTimer\">--:--</strong></div></div>",
+    "<p id=\"timerStatus\" class=\"hint\">Minimum interview time is being tracked.</p>",
+    "</div>",
+    "<div class=\"side-card\">",
+    "<p class=\"eyebrow\">Progress</p>",
+    "<strong>" + current + " / " + total + "</strong>",
+    "<p class=\"hint\">Minimum screen: " + escapeHtml(settings.minMinutes) + " minutes. Final submission unlocks when the minimum is met.</p>",
+    "</div>",
+    "<div class=\"side-card\">",
+    "<p class=\"eyebrow\">Answer quality</p>",
+    "<p class=\"hint\">Use concrete examples, data, tools, decisions, failure cases, and tradeoffs. Generic answers are scored strictly.</p>",
+    "</div>",
+    "</aside>",
     "</section>",
-    isFinal ? interviewTimerScript(endAt) : ""
+    interviewRuntimeScript(state.startedAt, endAt, isFinal),
+    diagram ? mermaidScript() : ""
   ].join("");
 }
 
@@ -560,16 +580,42 @@ function completeView(job) {
   ].join("");
 }
 
-function interviewTimerScript(endAt) {
+function renderMermaidDiagram(question) {
+  const diagram = normalizeMermaid(question && question.diagramMermaid);
+  if (!diagram) return "";
+  return [
+    "<div class=\"diagram-panel\">",
+    "<div class=\"diagram-head\"><span>Workflow diagram</span><span>Use this in your answer</span></div>",
+    "<pre class=\"mermaid\">" + escapeHtml(diagram) + "</pre>",
+    "</div>"
+  ].join("");
+}
+
+function mermaidScript() {
+  return [
+    "<script src=\"https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js\"></script>",
+    "<script>",
+    "(function(){if(window.mermaid){mermaid.initialize({startOnLoad:true,securityLevel:'strict',theme:'base',themeVariables:{primaryColor:'#eefaf7',primaryBorderColor:'#0f766e',primaryTextColor:'#17202a',lineColor:'#667085',fontFamily:'Inter, system-ui, sans-serif'}});}})();",
+    "</script>"
+  ].join("");
+}
+
+function interviewRuntimeScript(startedAt, endAt, isFinal) {
   return [
     "<script>",
     "(function(){",
+    "var startedAt=new Date(" + JSON.stringify(startedAt) + ").getTime();",
     "var endAt=new Date(" + JSON.stringify(endAt) + ").getTime();",
     "var button=document.getElementById('answerButton');",
-    "var hint=document.getElementById('timerHint');",
-    "function fmt(seconds){var m=Math.floor(seconds/60);var s=seconds%60;return m+'m '+String(s).padStart(2,'0')+'s';}",
-    "function tick(){var remaining=Math.max(0,Math.ceil((endAt-Date.now())/1000));if(remaining>0){button.disabled=true;hint.textContent='Final submission unlocks in '+fmt(remaining)+'. Use the remaining time to deepen your answer.';}else{button.disabled=false;hint.textContent='Minimum interview time met. You can submit now.';clearInterval(timer);}}",
+    "var form=document.getElementById('answerForm');",
+    "var elapsed=document.getElementById('elapsedTimer');",
+    "var remaining=document.getElementById('remainingTimer');",
+    "var status=document.getElementById('timerStatus');",
+    "var isFinal=" + JSON.stringify(Boolean(isFinal)) + ";",
+    "function fmt(seconds){var m=Math.floor(seconds/60);var s=seconds%60;return m+':'+String(s).padStart(2,'0');}",
+    "function tick(){var now=Date.now();var elapsedSeconds=Math.max(0,Math.floor((now-startedAt)/1000));var remainingSeconds=Math.max(0,Math.ceil((endAt-now)/1000));elapsed.textContent=fmt(elapsedSeconds);remaining.textContent=remainingSeconds>0?fmt(remainingSeconds):'met';if(remainingSeconds>0){status.textContent='Minimum time remaining: '+fmt(remainingSeconds)+'. Keep answering carefully.';if(isFinal){button.disabled=true;}}else{status.textContent='Minimum interview time met. You can submit once you finish the questions.';if(isFinal){button.disabled=false;clearInterval(timer);}}}",
     "var timer=setInterval(tick,1000);tick();",
+    "form.addEventListener('submit',function(){button.disabled=true;button.textContent=isFinal?'Submitting...':'Saving answer...';});",
     "})();",
     "</script>"
   ].join("");
@@ -1230,9 +1276,10 @@ async function generateInterview(env, job, resumeText) {
     "The interview must be difficult, deeply probing, and designed to reveal weak fit quickly through job-related evidence.",
     "Mix resume-specific probes, JD-specific scenarios, compliance checks, data-quality cases, workflow judgment, failure analysis, quantified rubric design, and job-related disqualification traps based on real operational mistakes.",
     "Use differing complexities: baseline evidence checks, intermediate workflow diagnosis, advanced incident/rubric design, and stress questions that test judgment under pressure.",
+    "For workflow, data-quality, compliance, support, CRM, or finance scenario questions, include a concise Mermaid flowchart in diagramMermaid where it helps test process judgment. Use diagramMermaid on about 5 questions, not every question.",
     "Ask for concrete examples, metrics, edge cases, evidence, and tradeoffs. Avoid trivia, personal questions, or discriminatory questions.",
     "Return only JSON with this shape:",
-    "{\"estimatedMinutes\":number,\"questions\":[{\"question\":\"string\",\"competency\":\"string\",\"complexity\":\"baseline|intermediate|advanced|stress\",\"expectedSignals\":\"string\",\"timeBoxMinutes\":number}]}",
+    "{\"estimatedMinutes\":number,\"questions\":[{\"question\":\"string\",\"competency\":\"string\",\"complexity\":\"baseline|intermediate|advanced|stress\",\"expectedSignals\":\"string\",\"timeBoxMinutes\":number,\"diagramMermaid\":\"optional mermaid flowchart string\"}]}",
     "Return " + settings.targetQuestions + " questions. Never return fewer than " + settings.minQuestions + " or more than " + settings.maxQuestions + ".",
     "Pace the questions for a minimum " + settings.minMinutes + " minute interview. Keep questions concise but demanding.",
     "The passing bar is " + settings.passingScore + "/100. The interview should make passing difficult unless the candidate gives specific, verifiable, operationally strong answers.",
@@ -1382,7 +1429,8 @@ function normalizeInterviewQuestions(rawQuestions, settings, job) {
       competency: clean(q.competency || "Interview signal"),
       complexity: normalizeComplexity(q.complexity),
       expectedSignals: clean(q.expectedSignals || ""),
-      timeBoxMinutes: Number(q.timeBoxMinutes || 1)
+      timeBoxMinutes: Number(q.timeBoxMinutes || 1),
+      diagramMermaid: normalizeMermaid(q.diagramMermaid)
     };
   }).filter(function(q) {
     return q.question.length > 12;
@@ -1435,6 +1483,13 @@ function normalizeComplexity(value) {
   return ["baseline", "intermediate", "advanced", "stress"].indexOf(normalized) === -1 ? "intermediate" : normalized;
 }
 
+function normalizeMermaid(value) {
+  const diagram = normalizeText(value || "", 1600);
+  if (!diagram) return "";
+  if (!/^(flowchart|graph|sequenceDiagram|stateDiagram|journey|timeline)\b/i.test(diagram)) return "";
+  return diagram;
+}
+
 function fallbackInterview(job) {
   const settings = interviewSettings(job);
   return {
@@ -1462,12 +1517,12 @@ function fallbackQuestionPool(job) {
     { question: "Which part of the JD is closest to work you have actually done, and which part is weakest for you? Give evidence for both.", competency: "Role fit honesty", complexity: "baseline", expectedSignals: "Self-awareness, concrete examples, and no inflated claims." },
     { question: "Explain how you would audit one AI-generated answer for factual accuracy, contextual relevance, tone, and business risk.", competency: "AI output evaluation", complexity: "baseline", expectedSignals: "Source checks, rubric criteria, severity labels, and repeatability." },
     { question: "Design a scoring rubric for AI-generated customer support responses. What errors are automatic failures?", competency: "Rubric design", complexity: "intermediate", expectedSignals: "Objective criteria, severe error classes, source checks, escalation rules." },
-    { question: "A CRM enrichment workflow is silently adding wrong company data. How do you detect it, contain it, and prove the fix worked?", competency: "Data quality incident response", complexity: "advanced", expectedSignals: "Sampling, source comparison, rollback, audit logs, measurable validation." },
-    { question: "Give a finance extraction example where automation should not be trusted. What controls would you put before reporting?", competency: "Financial validation", complexity: "advanced", expectedSignals: "Reconciliation, source evidence, approval thresholds, exception handling." },
+    { question: "Review the CRM enrichment workflow shown below. Where can silent bad data enter, what controls would you add, and how would you prove the fix worked?", competency: "Data quality incident response", complexity: "advanced", expectedSignals: "Sampling, source comparison, rollback, audit logs, measurable validation.", diagramMermaid: "flowchart LR\nA[Lead record] --> B[AI enrichment]\nB --> C[CRM update]\nC --> D[Sales queue]\nB --> E[Confidence score]\nE --> F{Below threshold?}\nF -- Yes --> G[Human review]\nF -- No --> C" },
+    { question: "Use the finance extraction diagram below. Identify the highest-risk handoff, the control you would insert, and the evidence needed before reporting.", competency: "Financial validation", complexity: "advanced", expectedSignals: "Reconciliation, source evidence, approval thresholds, exception handling.", diagramMermaid: "flowchart TD\nA[Invoice PDF] --> B[AI field extraction]\nB --> C[Bookkeeping category]\nC --> D[Monthly report]\nB --> E[Exception queue]\nE --> F[Human validation]\nF --> D" },
     { question: "Show how you would improve a weak prompt for lead scoring or outreach drafting. What test set would prove improvement?", competency: "Prompt testing", complexity: "intermediate", expectedSignals: "Before/after thinking, test cases, false positives, performance metrics." },
-    { question: "A model gives a confident but false summary of a client onboarding call. How would you document the issue for engineering?", competency: "Failure documentation", complexity: "intermediate", expectedSignals: "Inputs, expected vs actual, reproduction, frequency, severity, business impact." },
+    { question: "A model gives a confident but false summary of a client onboarding call. Use the diagram to explain what you would log for engineering and where you would add a stop-check.", competency: "Failure documentation", complexity: "intermediate", expectedSignals: "Inputs, expected vs actual, reproduction, frequency, severity, business impact.", diagramMermaid: "flowchart LR\nA[Call transcript] --> B[AI summary]\nB --> C[CSM notes]\nC --> D[Client onboarding plan]\nB --> E[QA sample]\nE --> F{False claim?}\nF -- Yes --> G[Bug report]" },
     { question: "What data should never be sent into an AI workflow without controls, and what controls are non-negotiable?", competency: "Privacy and governance", complexity: "baseline", expectedSignals: "PII handling, masking, retention, consent, least privilege, access control." },
-    { question: "You have 500 AI outputs to rank by quality today. Explain your sampling, labeling, and calibration process.", competency: "High-volume execution", complexity: "advanced", expectedSignals: "Batching, inter-rater checks, examples, fatigue controls, consistency." },
+    { question: "You have 500 AI outputs to rank by quality today. Based on the diagram, explain your batching, sampling, labeling, and reviewer calibration process.", competency: "High-volume execution", complexity: "advanced", expectedSignals: "Batching, inter-rater checks, examples, fatigue controls, consistency.", diagramMermaid: "flowchart TD\nA[500 AI outputs] --> B[Batch by workflow]\nB --> C[Gold-set calibration]\nC --> D[Reviewer labeling]\nD --> E[Disagreement review]\nE --> F[Final ranked set]\nE --> C" },
     { question: "Tell me about a time you found a systematic process error. What did you do after identifying it?", competency: "Operational ownership", complexity: "baseline", expectedSignals: "Root cause, stakeholder communication, durable fix, measured improvement." },
     { question: "Where would you draw the line between analyst responsibility and engineering responsibility in an AI workflow failure?", competency: "Bridge operations and tech", complexity: "intermediate", expectedSignals: "Clear handoff, evidence quality, prioritization, collaboration boundaries." },
     { question: "If your manager asks you to approve outputs you have not validated because the offer deadline is today, what do you do?", competency: "Integrity under pressure", complexity: "stress", expectedSignals: "Risk framing, escalation, partial approval boundaries, refusal when needed." },
@@ -1477,12 +1532,12 @@ function fallbackQuestionPool(job) {
     { question: "Give a bad example of a prompt instruction for financial categorization, then rewrite it into a testable instruction.", competency: "Prompt framework refinement", complexity: "intermediate", expectedSignals: "Concrete rewrite, edge cases, source hierarchy, and validation criteria." },
     { question: "The model output passes your checklist but a client says it is wrong. How do you investigate without becoming defensive?", competency: "Client-facing judgment", complexity: "stress", expectedSignals: "Evidence review, humility, communication, correction path, and prevention." },
     { question: "Which spreadsheet checks would you run before trusting an AI-generated financial report?", competency: "Spreadsheet and finance QA", complexity: "intermediate", expectedSignals: "Totals, reconciliations, outliers, missing values, duplicates, and audit trail." },
-    { question: "Explain how you would categorize AI failures so engineering can prioritize fixes instead of reading anecdotes.", competency: "Issue taxonomy", complexity: "advanced", expectedSignals: "Severity, frequency, reproducibility, impact, owners, and examples." },
+    { question: "Explain how you would categorize AI failures from the workflow below so engineering can prioritize fixes instead of reading anecdotes.", competency: "Issue taxonomy", complexity: "advanced", expectedSignals: "Severity, frequency, reproducibility, impact, owners, and examples.", diagramMermaid: "flowchart LR\nA[AI output] --> B[Reviewer audit]\nB --> C{Failure type}\nC --> D[Fact error]\nC --> E[Policy risk]\nC --> F[Missing context]\nC --> G[Tone issue]\nD --> H[Engineering queue]\nE --> H\nF --> H\nG --> H" },
     { question: "A candidate answer looks fluent but contains no evidence. How should the evaluator score it, and why?", competency: "Evaluation discipline", complexity: "baseline", expectedSignals: "Evidence standard, scoring consistency, and resistance to style bias." },
     { question: "What is your process for calibrating multiple reviewers so quality scores are consistent across a campaign?", competency: "Reviewer calibration", complexity: "advanced", expectedSignals: "Gold set, disagreements, examples, thresholds, and periodic recalibration." },
     { question: "You discover that an AI workflow improves speed but increases compliance risk. What recommendation do you make?", competency: "Risk tradeoff", complexity: "stress", expectedSignals: "Stop/go criteria, mitigation, stakeholder framing, and governance." },
     { question: "Name three edge cases for automated lead scoring and how each should be represented in a test set.", competency: "Edge-case coverage", complexity: "intermediate", expectedSignals: "Concrete edge cases, expected outcomes, and regression testing." },
-    { question: "Describe a one-day plan to audit this JD's sales, support, and finance AI workflows from zero context.", competency: "Execution planning", complexity: "advanced", expectedSignals: "Prioritization, data access, sampling, stakeholders, and first deliverables." },
+    { question: "Describe a one-day audit plan for the sales, support, and finance AI workflows shown below. What do you inspect first and why?", competency: "Execution planning", complexity: "advanced", expectedSignals: "Prioritization, data access, sampling, stakeholders, and first deliverables.", diagramMermaid: "flowchart TD\nA[Business inputs] --> B[Sales AI workflow]\nA --> C[Support AI workflow]\nA --> D[Finance AI workflow]\nB --> E[CRM actions]\nC --> F[Customer notes]\nD --> G[Reports]\nE --> H[QA dashboard]\nF --> H\nG --> H" },
     { question: "If the model and source system disagree, what is your source-of-truth policy?", competency: "Source discipline", complexity: "baseline", expectedSignals: "Primary records, auditability, escalation, and documentation." },
     { question: "What would make you disqualify an AI-generated customer success log even if it is grammatically perfect?", competency: "Disqualifying defects", complexity: "intermediate", expectedSignals: "Wrong facts, missing obligations, privacy leaks, unsupported claims, tone risk." },
     { question: "How would you measure whether prompt changes improved operational ROI rather than only making outputs sound better?", competency: "ROI measurement", complexity: "advanced", expectedSignals: "Baseline, controlled test, speed, accuracy, rework, conversion, support load." },
@@ -1727,7 +1782,7 @@ function css() {
     "nav{display:flex;align-items:center;gap:16px;color:var(--muted);font-size:14px}",
     "nav a,.ghost{color:var(--muted);text-decoration:none}.ghost{border:0;background:transparent;cursor:pointer;font:inherit;padding:0}",
     ".shell{width:min(1120px,calc(100% - 32px));margin:0 auto;padding:34px 0 56px}",
-    ".page-head{margin-bottom:22px}.page-head h1,.split h1,.interview h1,.complete h1,.auth h1,.preflight h1{margin:0 0 10px;font-size:clamp(28px,5vw,48px);line-height:1.03}",
+    ".page-head{margin-bottom:22px}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{margin:0 0 10px;font-size:clamp(28px,5vw,48px);line-height:1.03}",
     ".page-head p,.complete p,.muted,.hint,.lead{color:var(--muted)}.lead{max-width:720px;font-size:18px;line-height:1.5}.hint{font-size:13px;line-height:1.4}.hint.bad{color:var(--warn)}",
     ".row{display:flex;align-items:center;justify-content:space-between;gap:20px}.stack{display:grid;gap:14px}",
     ".job-card,.panel,.auth,.interview,.complete,.wide{background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(17,24,39,.05)}",
@@ -1736,6 +1791,7 @@ function css() {
     ".button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;padding:0 16px;border:1px solid var(--brand);border-radius:6px;background:var(--brand);color:white;font-weight:800;text-decoration:none;cursor:pointer}",
     ".button:hover{background:var(--brand-dark)}.button.secondary{background:white;color:var(--brand)}.button.full{width:100%}.button:disabled{opacity:.65;cursor:wait}",
     ".split{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:28px;align-items:start}.preflight-grid{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:22px;align-items:start}.panel,.auth,.interview,.complete,.wide{padding:24px}.auth{width:min(420px,100%);margin:8vh auto 0}",
+    ".interview{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px;align-items:start}.interview-main{min-width:0}.interview-side{position:sticky;top:86px;display:grid;gap:14px}.question-kicker{display:flex;justify-content:space-between;gap:16px;margin:0 0 14px;color:var(--accent);font-size:12px;font-weight:800;text-transform:uppercase}.question-title{margin:0 0 14px;font-size:clamp(30px,3.8vw,52px);line-height:1.08;letter-spacing:0}.question-meta{margin:0 0 18px}.timer-card,.side-card{padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc}.timer-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.timer-grid div{padding:12px;border:1px solid #dbe4ee;border-radius:6px;background:white}.timer-grid span{display:block;margin-bottom:4px;color:var(--muted);font-size:12px;font-weight:800;text-transform:uppercase}.timer-grid strong,.side-card strong{display:block;color:var(--ink);font-size:26px;line-height:1}",
     ".form{display:grid;gap:16px}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}",
     "label{display:grid;gap:7px;color:#344054;font-size:14px;font-weight:700}",
     "input,textarea,select{width:100%;min-height:42px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:6px;background:white;color:var(--ink);font:inherit}input[type=checkbox]{width:auto;min-height:auto;padding:0}textarea{resize:vertical}",
@@ -1744,9 +1800,10 @@ function css() {
     ".jd{margin-top:18px;color:#344054;line-height:1.6}.jd.compact{max-height:300px;overflow:auto}",
     ".flash{margin:0 0 18px;padding:12px 14px;border:1px solid #fedf89;border-radius:6px;background:#fffaeb;color:#93370d}",
     ".progress{height:8px;border-radius:999px;overflow:hidden;background:#e6ebf2;margin-bottom:24px}.progress span{display:block;height:100%;background:var(--brand)}",
-    ".clean-list{margin:0;padding-left:18px;color:#344054;line-height:1.65}.topic-box{margin-top:22px;padding:16px;border:1px solid #c8d1ff;border-radius:8px;background:#f4f6ff}.topic-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.topic-chip{display:inline-flex;align-items:center;min-height:34px;padding:6px 10px;border:1px solid #aab8ff;border-radius:6px;background:#eef1ff;color:#1d2939;font-weight:700}.checks{display:grid;gap:10px;margin:14px 0}.check-row{margin:0;padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc;color:#475467}.check-row.ok{border-color:#9dd4c9;background:#eefaf7;color:#115e59}.check-row.bad{border-color:#f6c7a7;background:#fff4ed;color:#93370d}.hidden{display:none}.next-card{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;text-align:left}.next-card p{margin:6px 0 0}",
+    ".clean-list{margin:0;padding-left:18px;color:#344054;line-height:1.65}.topic-box{margin-top:22px;padding:16px;border:1px solid #c8d1ff;border-radius:8px;background:#f4f6ff}.topic-list{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.topic-chip{display:inline-flex;align-items:center;min-height:34px;padding:6px 10px;border:1px solid #aab8ff;border-radius:6px;background:#eef1ff;color:#1d2939;font-weight:700}.diagram-panel{margin:18px 0;padding:14px;border:1px solid #c8d1ff;border-radius:8px;background:#f7f8ff}.diagram-head{display:flex;justify-content:space-between;gap:12px;margin-bottom:10px;color:#475467;font-size:12px;font-weight:800;text-transform:uppercase}.mermaid{margin:0;overflow:auto;text-align:center;background:white;border:1px solid #e1e7f5;border-radius:6px;padding:12px}.checks{display:grid;gap:10px;margin:14px 0}.check-row{margin:0;padding:12px;border:1px solid var(--line);border-radius:6px;background:#f8fafc;color:#475467}.check-row.ok{border-color:#9dd4c9;background:#eefaf7;color:#115e59}.check-row.bad{border-color:#f6c7a7;background:#fff4ed;color:#93370d}.hidden{display:none}.next-card{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:8px;background:#f8fafc;text-align:left}.next-card p{margin:6px 0 0}",
     ".table-wrap{overflow-x:auto;background:white;border:1px solid var(--line);border-radius:8px}table{width:100%;border-collapse:collapse;font-size:14px}th,td{padding:13px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f8fafc;color:#475467;font-size:12px;text-transform:uppercase;letter-spacing:0}tr:last-child td{border-bottom:0}",
     ".status-form{display:flex;gap:10px;align-items:center}.empty{padding:46px 0;text-align:center}.complete{max-width:680px;margin:8vh auto 0;text-align:center}.section-gap{margin-top:24px}.pill{display:inline-flex;padding:3px 8px;border-radius:999px;background:#eef6f5;color:#115e59;font-weight:800;font-size:12px}",
-    "@media(max-width:760px){.topbar,.row,.job-card,.status-form{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid{grid-template-columns:1fr}.page-head h1,.split h1,.interview h1,.complete h1,.auth h1,.preflight h1{font-size:32px}}"
+    "@media(max-width:900px){.interview{grid-template-columns:1fr}.interview-side{position:static;grid-template-columns:1fr 1fr}.side-card:last-child{grid-column:1/-1}}",
+    "@media(max-width:760px){.topbar,.row,.job-card,.status-form{align-items:stretch;flex-direction:column}nav{width:100%;justify-content:space-between}.split,.grid-2,.preflight-grid,.interview-side{grid-template-columns:1fr}.page-head h1,.split h1,.complete h1,.auth h1,.preflight h1{font-size:32px}.question-title{font-size:30px}.question-kicker{display:grid}.timer-grid{grid-template-columns:1fr}}"
   ].join("");
 }
